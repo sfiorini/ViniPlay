@@ -247,7 +247,7 @@ git commit -m "test: cover runtime path resolution"
 
 **Step 1: Write the failing test**
 
-Create `tests/integration/pr-order.test.js` that executes `node scripts/check-pr-order.js` and asserts it exits successfully. The script must validate the chosen order `116 -> 114 -> 119 -> 109` by checking that each fetched `upstream/pr/<number>` ref exists and that a temporary detached worktree can merge them sequentially without conflicts.
+Create `tests/integration/pr-order.test.js` that executes `node scripts/check-pr-order.js` and asserts it exits successfully. The script must validate the chosen order `116 -> 114 -> 119 -> 109` using only existing local refs and `git merge-tree`. It must not add remotes, fetch network refs, create worktrees, commit, or mutate repository state.
 
 Test case:
 
@@ -273,50 +273,33 @@ Expected: FAIL because `scripts/check-pr-order.js` does not exist.
 
 **Step 3: Implement order check script**
 
-The script must fetch missing PR refs before validating order:
+Precondition for this story: fetch PR refs outside the test harness before running the plan if they are missing:
 
 ```bash
-git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/ardoviniandrea/ViniPlay.git
 git fetch upstream refs/pull/109/head:refs/remotes/upstream/pr/109 refs/pull/114/head:refs/remotes/upstream/pr/114 refs/pull/116/head:refs/remotes/upstream/pr/116 refs/pull/119/head:refs/remotes/upstream/pr/119
 ```
 
-Create `scripts/check-pr-order.js`:
+Create `scripts/check-pr-order.js` as a read-only local-ref validator:
 
 ```js
 const { execFileSync } = require('child_process');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
 
 const order = ['116', '114', '119', '109'];
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'viniplay-pr-order-'));
+let base = 'HEAD';
 
-try {
-  try {
-    execFileSync('git', ['remote', 'get-url', 'upstream'], { stdio: 'pipe' });
-  } catch {
-    execFileSync('git', ['remote', 'add', 'upstream', 'https://github.com/ardoviniandrea/ViniPlay.git'], { stdio: 'pipe' });
+for (const pr of order) {
+  const ref = `upstream/pr/${pr}`;
+  execFileSync('git', ['rev-parse', '--verify', ref], { stdio: 'pipe' });
+  const mergeBase = execFileSync('git', ['merge-base', base, ref], { encoding: 'utf8' }).trim();
+  const output = execFileSync('git', ['merge-tree', mergeBase, base, ref], { encoding: 'utf8' });
+  if (output.includes('<<<<<<<') || output.includes('changed in both') || output.includes('added in both')) {
+    throw new Error(`PR ${pr} has merge conflicts in planned order`);
   }
-  const dirty = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim();
-  if (dirty) throw new Error('Refusing to check PR order with uncommitted changes. Commit or stash first.');
-  execFileSync('git', ['fetch', 'upstream',
-    'refs/pull/109/head:refs/remotes/upstream/pr/109',
-    'refs/pull/114/head:refs/remotes/upstream/pr/114',
-    'refs/pull/116/head:refs/remotes/upstream/pr/116',
-    'refs/pull/119/head:refs/remotes/upstream/pr/119'
-  ], { stdio: 'pipe' });
-  for (const pr of order) {
-    execFileSync('git', ['rev-parse', '--verify', `upstream/pr/${pr}`], { stdio: 'pipe' });
-  }
-  execFileSync('git', ['worktree', 'add', '--detach', tmp, 'HEAD'], { stdio: 'pipe' });
-  for (const pr of order) {
-    execFileSync('git', ['-C', tmp, 'merge', '--no-commit', '--no-ff', `upstream/pr/${pr}`], { stdio: 'pipe' });
-    execFileSync('git', ['-C', tmp, 'commit', '--no-edit'], { stdio: 'pipe' });
-  }
-} finally {
-  try { execFileSync('git', ['worktree', 'remove', '-f', tmp], { stdio: 'pipe' }); } catch {}
+  base = ref;
 }
 ```
+
+This script reads refs only. It does not fetch, add remotes, create worktrees, commit, or modify repository state.
 
 Add script:
 
@@ -478,45 +461,27 @@ git commit -m "fix: stabilize mobile navigation transition handling"
 ### S-301: Apply path resolution helper to server startup
 
 **Files:**
+- Create: `lib/serverConfig.js`
 - Modify: `server.js`
 - Modify: `Dockerfile`
 - Modify/Create: `.gitignore`
-- Test: `tests/integration/server-paths.test.js`
+- Test: `tests/unit/server-config.test.js`
 
-**Step 1: Write failing integration-oriented test**
+**Step 1: Write failing pure configuration test**
 
-Create `tests/integration/server-paths.test.js` that starts `server.js` in a child process with temporary `DATA_DIR`, `DVR_DIR`, and `SESSION_SECRET` values. The test must assert that startup logs include the temporary data directory and that the process creates both temp directories instead of `/data` and `/dvr`.
-
-Use executable tests like:
+Create `tests/unit/server-config.test.js`. Do not spawn `server.js`; test a pure configuration helper so the failure mode is deterministic.
 
 ```js
 const { describe, expect, it } = require('vitest');
-const { spawn } = require('child_process');
 const fs = require('fs');
-const os = require('os');
-const path = require('path');
 
-describe('server runtime paths', () => {
-  it('server startup honors DATA_DIR and DVR_DIR environment overrides', async () => {
-    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vp-data-'));
-    const dvrDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vp-dvr-'));
-    const child = spawn(process.execPath, ['server.js'], {
-      env: { ...process.env, DATA_DIR: dataDir, DVR_DIR: dvrDir, SESSION_SECRET: 'test-secret', PORT: '0' }
-    });
-    const output = await new Promise((resolve) => {
-      let combined = '';
-      const timer = setTimeout(() => resolve(combined), 8000);
-      const collect = chunk => {
-        combined += chunk.toString();
-        if (combined.includes('Application starting')) { clearTimeout(timer); resolve(combined); }
-      };
-      child.stdout.on('data', collect);
-      child.stderr.on('data', collect);
-      child.on('exit', () => { clearTimeout(timer); resolve(combined); });
-    }).finally(() => child.kill('SIGTERM'));
-    expect(output).toContain(dataDir);
-    expect(fs.existsSync(dataDir)).toBe(true);
-    expect(fs.existsSync(dvrDir)).toBe(true);
+describe('server runtime configuration', () => {
+  it('resolves DATA_DIR, DVR_DIR, and PORT from environment overrides', () => {
+    const { resolveServerConfig } = require('../../lib/serverConfig');
+    const config = resolveServerConfig({ DATA_DIR: '/tmp/vp-data', DVR_DIR: '/tmp/vp-dvr', PORT: '0' }, '/app');
+    expect(config.port).toBe(0);
+    expect(config.paths.DATA_DIR).toBe('/tmp/vp-data');
+    expect(config.paths.DVR_DIR).toBe('/tmp/vp-dvr');
   });
 
   it('Dockerfile declares DATA_DIR=/data and DVR_DIR=/dvr defaults', () => {
@@ -530,24 +495,33 @@ describe('server runtime paths', () => {
 **Step 2: Run test to verify it fails**
 
 ```bash
-npm test tests/integration/server-paths.test.js
+npm test tests/unit/server-config.test.js
 ```
 
-Expected: FAIL because `server.js` still hard-codes `/data`, `/dvr`, and port `8998`.
+Expected: FAIL because `lib/serverConfig.js` does not exist and `Dockerfile` does not yet declare the runtime env defaults.
 
 **Step 3: Integrate into `server.js`**
 
-Replace hard-coded path constants and make the server port test-isolatable:
+Create `lib/serverConfig.js`:
 
 ```js
-const port = Number(process.env.PORT || 8998);
+const { resolveRuntimePaths } = require('./paths');
+
+function resolveServerConfig(env = process.env, appDir = __dirname) {
+  return {
+    port: Number(env.PORT || 8998),
+    paths: resolveRuntimePaths(env, appDir)
+  };
+}
+
+module.exports = { resolveServerConfig };
 ```
 
-Then replace path constants with:
+Then replace hard-coded server config in `server.js` with:
 
 ```js
-const { resolveRuntimePaths } = require('./lib/paths');
-const runtimePaths = resolveRuntimePaths(process.env, __dirname);
+const { resolveServerConfig } = require('./lib/serverConfig');
+const { port, paths: runtimePaths } = resolveServerConfig(process.env, __dirname);
 const {
   DATA_DIR,
   DVR_DIR,
@@ -587,7 +561,7 @@ dvr/
 **Step 4: Verify**
 
 ```bash
-npm test tests/integration/server-paths.test.js tests/unit/paths.test.js
+npm test tests/unit/server-config.test.js tests/unit/paths.test.js
 node --check server.js
 Dockerfile_has_envs=$(grep -c '^ENV DATA_DIR=/data\|^ENV DVR_DIR=/dvr' Dockerfile); test "$Dockerfile_has_envs" -eq 2
 npm run check:diff
@@ -598,7 +572,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add server.js Dockerfile .gitignore lib/paths.js tests/unit/paths.test.js tests/integration/server-paths.test.js
+git add lib/serverConfig.js server.js Dockerfile .gitignore lib/paths.js tests/unit/paths.test.js tests/unit/server-config.test.js
 git commit -m "fix: support local runtime data directories"
 ```
 
@@ -764,16 +738,33 @@ Required assertions:
 - converts relative cast URLs to absolute URLs
 - preserves provider-qualified userAgentId when present
 
-Example expected redirect result:
+Minimum executable test code:
 
 ```js
-expect(buildCastStreamUrl({
-  url: 'http://provider.test/live.ts?token=a b',
-  origin: 'https://viniplay.test',
-  activeCastProfileId: 'cast-default',
-  activeUserAgentId: 'ua-1',
-  activeStreamProfile: { command: 'redirect' }
-})).toBe('https://viniplay.test/stream?url=http%3A%2F%2Fprovider.test%2Flive.ts%3Ftoken%3Da%20b&profileId=cast-default&userAgentId=ua-1');
+import { describe, expect, it } from 'vitest';
+
+describe('buildCastStreamUrl', () => {
+  it('builds /stream URL for redirect profiles using encoded raw stream URL', async () => {
+    const { buildCastStreamUrl } = await import('../../public/js/modules/castUrl.js');
+    expect(buildCastStreamUrl({
+      url: 'http://provider.test/live.ts?token=a b',
+      origin: 'https://viniplay.test',
+      activeCastProfileId: 'cast-default',
+      activeUserAgentId: 'ua-1',
+      activeStreamProfile: { command: 'redirect' }
+    })).toBe('https://viniplay.test/stream?url=http%3A%2F%2Fprovider.test%2Flive.ts%3Ftoken%3Da%20b&profileId=cast-default&userAgentId=ua-1');
+  });
+
+  it('replaces existing profileId with active cast profile', async () => {
+    const { buildCastStreamUrl } = await import('../../public/js/modules/castUrl.js');
+    expect(buildCastStreamUrl({
+      url: 'https://viniplay.test/stream?url=x&profileId=old',
+      origin: 'https://viniplay.test',
+      activeCastProfileId: 'cast-default',
+      activeStreamProfile: { command: '-i {streamUrl}' }
+    })).toContain('profileId=cast-default');
+  });
+});
 ```
 
 **Step 2: Run test to verify it fails**
@@ -815,17 +806,34 @@ git commit -m "fix: build cast URLs for redirect profiles"
 ### S-402: Refresh local playback after Cast session end
 
 **Files:**
+- Create: `public/js/modules/castSession.js`
 - Modify: `public/js/modules/cast.js`
 - Test: `tests/frontend/cast-session.test.js`
 
 **Step 1: Write failing test**
 
-Test that when session state becomes `SESSION_ENDED`:
+Use executable jsdom test code. If direct access to the session handler is not exported, first extract `handleCastSessionEnded({ castState, stopCastStream, updatePlayerUI, forceRefreshStream, showNotification })` into `public/js/modules/castSession.js` and test that helper.
 
-- current Cast stream stop is requested
-- Cast state is cleared
-- player UI is updated
-- `forceRefreshStream()` is called and errors are caught/logged
+```js
+// @vitest-environment jsdom
+import { describe, expect, it, vi } from 'vitest';
+
+describe('cast session end handling', () => {
+  it('stops cast stream, clears state, updates UI, and refreshes local playback', async () => {
+    const { handleCastSessionEnded } = await import('../../public/js/modules/castSession.js');
+    const castState = { currentCastStreamUrl: 'http://provider/live.ts', session: {}, isCasting: true, currentMedia: {} };
+    const stopCastStream = vi.fn();
+    const updatePlayerUI = vi.fn();
+    const forceRefreshStream = vi.fn().mockResolvedValue(undefined);
+    await handleCastSessionEnded({ castState, stopCastStream, updatePlayerUI, forceRefreshStream, showNotification: vi.fn() });
+    expect(stopCastStream).toHaveBeenCalledWith('http://provider/live.ts');
+    expect(castState.currentCastStreamUrl).toBe(null);
+    expect(castState.isCasting).toBe(false);
+    expect(updatePlayerUI).toHaveBeenCalled();
+    expect(forceRefreshStream).toHaveBeenCalled();
+  });
+});
+```
 
 **Step 2: Run test to verify it fails**
 
@@ -860,7 +868,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add public/js/modules/cast.js tests/frontend/cast-session.test.js
+git add public/js/modules/castSession.js public/js/modules/cast.js tests/frontend/cast-session.test.js
 git commit -m "fix: refresh local stream after cast ends"
 ```
 
@@ -907,10 +915,8 @@ Expected: FAIL because current `index.html` only loads mpegts.js and Cast sender
 Add HLS.js script near mpegts:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.18/dist/hls.min.js"></script>
 ```
-
-Prefer a pinned version if reproducibility is required.
 
 **Step 4: Verify**
 
@@ -1082,10 +1088,59 @@ describe('parseM3U', () => {
 });
 ```
 
-Then write `tests/unit/timeshift-engine.test.js` with fake `spawn`, fake `fs`, and fake DB callbacks. Required executable assertions:
+Then write `tests/unit/timeshift-engine.test.js` with explicit fakes. Minimum executable test code:
 
-- duplicate `start()` calls for the same channel leave `spawn` called once
-- missing parsed channel URL leaves `spawn` uncalled
+```js
+const { describe, expect, it, vi } = require('vitest');
+const path = require('path');
+const EventEmitter = require('events');
+
+function fakeProcess() {
+  const proc = new EventEmitter();
+  proc.stderr = new EventEmitter();
+  proc.kill = vi.fn();
+  return proc;
+}
+
+function fakeEngineDeps(overrides = {}) {
+  const proc = fakeProcess();
+  return {
+    db: { get: (_sql, _params, cb) => cb(null, { is_enabled: 1 }), all: (_sql, _params, cb) => cb(null, []) },
+    fs: { existsSync: () => true, mkdirSync: vi.fn(), readFileSync: () => '#EXTM3U', readdirSync: () => [] },
+    path,
+    spawn: vi.fn(() => proc),
+    parseM3U: () => [{ id: 'c1', url: 'http://provider/live.ts' }],
+    getSettings: () => ({ activeUserAgentId: 'ua1', userAgents: [{ id: 'ua1', value: 'UA' }], timeshift: { segmentDurationSeconds: 6, safetyBufferMinutes: 10 } }),
+    liveChannelsPath: '/data/live_channels.m3u',
+    timeshiftDir: '/data/timeshift',
+    setTimeout: vi.fn(fn => fn()),
+    proc,
+    ...overrides
+  };
+}
+
+describe('timeshift engine', () => {
+  it('does not start a duplicate process for the same channel', async () => {
+    const { createTimeshiftEngine } = require('../../lib/timeshiftEngine');
+    const deps = fakeEngineDeps();
+    const engine = createTimeshiftEngine(deps);
+    await engine.start('c1', 'Channel 1');
+    await engine.start('c1', 'Channel 1');
+    expect(deps.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not spawn when the channel is missing from parsed M3U', async () => {
+    const { createTimeshiftEngine } = require('../../lib/timeshiftEngine');
+    const deps = fakeEngineDeps({ parseM3U: () => [] });
+    const engine = createTimeshiftEngine(deps);
+    await engine.start('missing', 'Missing');
+    expect(deps.spawn).not.toHaveBeenCalled();
+  });
+});
+```
+
+Additional required executable assertions:
+
 - `start()` creates the channel-specific HLS directory
 - `start()` spawns `ffmpeg` with `-f hls`, `-hls_time`, and segment filename args
 - `stop()` kills the process and removes active status
@@ -1202,7 +1257,14 @@ Expected: FAIL until helper behavior is complete.
 
 **Step 3: Implement minimum cleanup/playlist behavior**
 
-Fix any upstream PR #109 weaknesses found by tests. Prefer sorting by numeric segment suffix and writing atomically if practical.
+Implement the specific corrections verified by the tests:
+
+- sort segment files by numeric suffix, not lexical order
+- never delete `.m3u8`, `.meta`, or non-`.ts` files during cleanup
+- apply max duration plus safety buffer when deleting old segments
+- regenerate playlists from remaining segments after cleanup
+- omit `#EXT-X-ENDLIST` for live playlists
+- use the configured target duration
 
 **Step 4: Verify**
 
@@ -1548,7 +1610,7 @@ Expected: FAIL because the validator and report do not exist.
 
 **Step 3: Implement validator and report**
 
-Create `scripts/validate-pr-assessment.js` that reads `docs/plans/2026-04-27-upstream-pr-assessment.md` and asserts each PR section exists for `#116`, `#114`, `#119`, and `#109`, with these required labels under each section:
+Create `scripts/validate-pr-assessment.js` that reads `docs/plans/2026-04-27-upstream-pr-assessment.md` and asserts each PR section exists for `#116`, `#114`, `#119`, and `#109`, with non-placeholder evidence under each required label. The validator must fail if a label value is blank, `TODO`, `...`, or missing at least one test command/commit reference in the PR section.
 
 ```md
 - Verdict:
@@ -1631,6 +1693,8 @@ These checks require real browser/device interaction after automated verificatio
 - [ ] Chromecast device accepts the generated Cast media URL.
 - [ ] Admin can enable timeshift for a real playable channel.
 - [ ] Timeshift playback uses HLS controls with a real stream and normal playback otherwise.
+
+If any manual check fails, stop and either fix forward with a new failing automated regression test or revert the last story commit with `git revert <commit>` before continuing. Do not proceed with known manual smoke failures.
 
 **Step 7: Final commit if needed**
 
