@@ -30,7 +30,7 @@ For every story:
 5. Run the relevant syntax/static checks.
 6. Commit the story.
 
-Do not batch multiple PRs into one unreviewable commit. Do not write Vitest todo tests: every `it(...)` must include an executable callback with at least one assertion. Backend tests use CommonJS `require`; frontend test files that touch DOM APIs must start with `// @vitest-environment jsdom` and may import browser ES modules.
+Do not batch multiple PRs into one unreviewable commit. Do not write Vitest todo tests: every `it(...)` must include an executable callback with at least one assertion. Tests for modules that do not exist yet must import/require those modules inside the `it(...)` callback (or use dynamic `await import(...)`) so Vitest collection succeeds and the test fails inside the assertion phase. Backend tests use CommonJS `require`; frontend test files that touch DOM APIs must start with `// @vitest-environment jsdom` and may import browser ES modules.
 
 ## Baseline Commands
 
@@ -155,22 +155,28 @@ Create `tests/unit/paths.test.js`:
 ```js
 const { describe, expect, it } = require('vitest');
 const path = require('path');
-const { resolveRuntimePaths } = require('../../lib/paths');
+
+function loadSubject() {
+  return require('../../lib/paths');
+}
 
 describe('resolveRuntimePaths', () => {
   it('uses Docker defaults when no overrides are set', () => {
+    const { resolveRuntimePaths } = loadSubject();
     const paths = resolveRuntimePaths({}, '/app');
     expect(paths.DATA_DIR).toBe('/data');
     expect(paths.DVR_DIR).toBe('/dvr');
   });
 
   it('uses env overrides for local development', () => {
+    const { resolveRuntimePaths } = loadSubject();
     const paths = resolveRuntimePaths({ DATA_DIR: '/tmp/viniplay-data', DVR_DIR: '/tmp/viniplay-dvr' }, '/app');
     expect(paths.DATA_DIR).toBe('/tmp/viniplay-data');
     expect(paths.DVR_DIR).toBe('/tmp/viniplay-dvr');
   });
 
   it('derives dependent paths from DATA_DIR', () => {
+    const { resolveRuntimePaths } = loadSubject();
     const paths = resolveRuntimePaths({ DATA_DIR: '/tmp/data' }, '/app');
     expect(paths.LOGS_DIR).toBe(path.join('/tmp/data', 'logs'));
     expect(paths.IMAGE_CACHE_DIR).toBe(path.join('/tmp/data', 'image_cache'));
@@ -355,7 +361,10 @@ Use this executable test code; it must fail initially because the helper module 
 ```js
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { openMobileMenuElements, closeMobileMenuElements } from '../../public/js/modules/mobileNav.js';
+
+async function loadSubject() {
+  return import('../../public/js/modules/mobileNav.js');
+}
 
 function fixture() {
   document.body.innerHTML = `
@@ -370,7 +379,8 @@ function fixture() {
 }
 
 describe('mobile navigation helpers', () => {
-  it('openMobileMenuElements shows menu and overlay', () => {
+  it('openMobileMenuElements shows menu and overlay', async () => {
+    const { openMobileMenuElements } = await loadSubject();
     const els = fixture();
     openMobileMenuElements(els);
     expect(els.menu.classList.contains('hidden')).toBe(false);
@@ -380,7 +390,8 @@ describe('mobile navigation helpers', () => {
     expect(document.body.classList.contains('overflow-hidden')).toBe(true);
   });
 
-  it('closeMobileMenuElements waits for transform transition before hiding menu', () => {
+  it('closeMobileMenuElements waits for transform transition before hiding menu', async () => {
+    const { openMobileMenuElements, closeMobileMenuElements } = await loadSubject();
     const els = fixture();
     openMobileMenuElements(els);
     closeMobileMenuElements(els);
@@ -389,7 +400,8 @@ describe('mobile navigation helpers', () => {
     expect(els.menu.classList.contains('hidden')).toBe(true);
   });
 
-  it('closeMobileMenuElements ignores non-transform transitionend events', () => {
+  it('closeMobileMenuElements ignores non-transform transitionend events', async () => {
+    const { openMobileMenuElements, closeMobileMenuElements } = await loadSubject();
     const els = fixture();
     openMobileMenuElements(els);
     closeMobileMenuElements(els);
@@ -489,13 +501,16 @@ describe('server runtime paths', () => {
     const child = spawn(process.execPath, ['server.js'], {
       env: { ...process.env, DATA_DIR: dataDir, DVR_DIR: dvrDir, SESSION_SECRET: 'test-secret' }
     });
-    const output = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('server startup timeout')), 8000);
-      child.stdout.on('data', chunk => {
-        const text = chunk.toString();
-        if (text.includes('Application starting')) { clearTimeout(timer); resolve(text); }
-      });
-      child.stderr.on('data', chunk => reject(new Error(chunk.toString())));
+    const output = await new Promise((resolve) => {
+      let combined = '';
+      const timer = setTimeout(() => resolve(combined), 8000);
+      const collect = chunk => {
+        combined += chunk.toString();
+        if (combined.includes('Application starting')) { clearTimeout(timer); resolve(combined); }
+      };
+      child.stdout.on('data', collect);
+      child.stderr.on('data', collect);
+      child.on('exit', () => { clearTimeout(timer); resolve(combined); });
     }).finally(() => child.kill('SIGTERM'));
     expect(output).toContain(dataDir);
     expect(fs.existsSync(dataDir)).toBe(true);
@@ -588,9 +603,9 @@ git commit -m "fix: support local runtime data directories"
 
 **Step 1: Write failing tests**
 
-Create `tests/unit/image-proxy.test.js` with Supertest/Nock against a tiny Express app using the extracted handler.
+Create `tests/unit/image-proxy.test.js` with Supertest/Nock against a tiny Express app using the extracted handler. Require `../../lib/imageProxy` inside each `it(...)` callback so the missing module fails during test execution, not collection.
 
-Required tests:
+Required assertions:
 
 - rejects missing url with 400
 - rejects invalid URL with 400
@@ -662,7 +677,7 @@ git commit -m "fix: harden image proxy fetching and caching"
 
 **Step 1: Write failing tests**
 
-Create the concrete frontend helper `public/js/modules/imageProxyUrl.js`:
+Create the concrete frontend helper `public/js/modules/imageProxyUrl.js`. Import it with dynamic `await import(...)` inside each `it(...)` callback so the missing module fails during test execution, not collection.
 
 Create `public/js/modules/imageProxyUrl.js`:
 
@@ -730,7 +745,9 @@ git commit -m "fix: proxy external channel logos"
 
 **Step 1: Write failing tests**
 
-Create tests for:
+Create tests for `public/js/modules/castUrl.js`. Import `buildCastStreamUrl` with dynamic `await import(...)` inside each `it(...)` callback so the missing module fails during test execution, not collection.
+
+Required assertions:
 
 - replaces existing profileId with active cast profile
 - appends cast profile when no profileId exists
@@ -917,10 +934,10 @@ Use executable tests:
 
 ```js
 const { describe, expect, it } = require('vitest');
-const { mergeSettingsWithDefaults } = require('../../lib/settingsDefaults');
 
 describe('timeshift settings defaults', () => {
   it('adds complete timeshift defaults to empty settings', () => {
+    const { mergeSettingsWithDefaults } = require('../../lib/settingsDefaults');
     const settings = mergeSettingsWithDefaults({});
     expect(settings.timeshift).toMatchObject({
       segmentDurationSeconds: 6,
@@ -932,6 +949,7 @@ describe('timeshift settings defaults', () => {
   });
 
   it('preserves existing user timeshift values during migration', () => {
+    const { mergeSettingsWithDefaults } = require('../../lib/settingsDefaults');
     const settings = mergeSettingsWithDefaults({ timeshift: { segmentDurationSeconds: 4 } });
     expect(settings.timeshift.segmentDurationSeconds).toBe(4);
     expect(settings.timeshift.cleanupIntervalMinutes).toBe(5);
@@ -956,6 +974,7 @@ Create `lib/settingsDefaults.js` with exported `DEFAULT_SETTINGS` and `mergeSett
 ```bash
 npm test tests/unit/timeshift-settings.test.js
 npm run check:syntax
+npm run check:diff
 ```
 
 Expected: PASS.
@@ -981,10 +1000,10 @@ Use executable tests:
 ```js
 const { describe, expect, it } = require('vitest');
 const sqlite3 = require('sqlite3').verbose();
-const { initializeSchema } = require('../../lib/schema');
 
 describe('timeshift schema', () => {
   it('creates the timeshift_channels table with required columns', async () => {
+    const { initializeSchema } = require('../../lib/schema');
     const db = new sqlite3.Database(':memory:');
     await initializeSchema(db);
     const columns = await new Promise((resolve, reject) => {
@@ -1018,6 +1037,7 @@ Create `lib/schema.js` with exported `initializeSchema(db)` and move DB table cr
 ```bash
 npm test tests/unit/timeshift-schema.test.js
 npm run check:syntax
+npm run check:diff
 ```
 
 Expected: PASS.
@@ -1044,10 +1064,10 @@ First write `tests/unit/m3u-parser.test.js` to lock the existing `parseM3U()` be
 
 ```js
 const { describe, expect, it } = require('vitest');
-const { parseM3U } = require('../../lib/m3uParser');
 
 describe('parseM3U', () => {
   it('parses channel id, name, logo, group, and URL from M3U content', () => {
+    const { parseM3U } = require('../../lib/m3uParser');
     const result = parseM3U('#EXTM3U\n#EXTINF:-1 tvg-id="bbc" tvg-logo="logo.png" group-title="News",BBC News\nhttp://example.test/live.ts');
     expect(result[0]).toMatchObject({ id: 'bbc', name: 'BBC News', logo: 'logo.png', group: 'News', url: 'http://example.test/live.ts' });
   });
@@ -1117,10 +1137,35 @@ Use executable tests. At minimum include this media-sequence test plus the liste
 
 ```js
 const { describe, expect, it } = require('vitest');
-const { createTimeshiftEngine } = require('../../lib/timeshiftEngine');
+const path = require('path');
+
+function fakeSegmentFs(files, writes) {
+  return {
+    existsSync: () => true,
+    readdirSync: () => files,
+    writeFileSync: (file, content) => writes.set(file, content),
+    statSync: () => ({ mtimeMs: Date.now() })
+  };
+}
+
+function fakeDeps(overrides = {}) {
+  return {
+    db: { all: () => {}, get: () => {} },
+    fs: overrides.fs,
+    path,
+    spawn: () => ({ on: () => {}, stderr: { on: () => {} } }),
+    parseM3U: () => [],
+    getSettings: () => ({ timeshift: { segmentDurationSeconds: 6, safetyBufferMinutes: 10 } }),
+    liveChannelsPath: '/live.m3u',
+    timeshiftDir: '/timeshift',
+    setTimeout: () => {},
+    ...overrides
+  };
+}
 
 describe('timeshift playlist generation', () => {
   it('generates media sequence from first remaining segment number and omits ENDLIST', () => {
+    const { createTimeshiftEngine } = require('../../lib/timeshiftEngine');
     const writes = new Map();
     const fs = fakeSegmentFs(['segment_00000007.ts', 'segment_00000008.ts'], writes);
     const engine = createTimeshiftEngine(fakeDeps({ fs }));
@@ -1172,6 +1217,7 @@ git commit -m "feat: manage timeshift segment cleanup and playlists"
 
 **Files:**
 - Create: `lib/timeshiftRoutes.js`
+- Create: `tests/helpers/makeTimeshiftTestApp.js`
 - Modify: `server.js`
 - Test: `tests/integration/timeshift-api.test.js`
 
@@ -1196,6 +1242,8 @@ describe('timeshift routes', () => {
   });
 });
 ```
+
+Create `tests/helpers/makeTimeshiftTestApp.js` in Step 1 before the test file. It must build an Express app, inject `req.session` from the provided options, and call `registerTimeshiftRoutes(app, deps)` from inside each test callback so missing route modules fail during test execution, not collection.
 
 Additional required assertions:
 
@@ -1248,7 +1296,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add lib/timeshiftRoutes.js server.js tests/integration/timeshift-api.test.js
+git add lib/timeshiftRoutes.js tests/helpers/makeTimeshiftTestApp.js server.js tests/integration/timeshift-api.test.js
 git commit -m "feat: add timeshift management APIs"
 ```
 
@@ -1403,10 +1451,14 @@ Use executable tests against an extracted startup helper `lib/timeshiftStartup.j
 
 ```js
 const { describe, expect, it, vi } = require('vitest');
-const { startTimeshiftServices } = require('../../lib/timeshiftStartup');
+
+function fakeProcess() {
+  return { on: vi.fn() };
+}
 
 describe('timeshift startup wiring', () => {
   it('initializes enabled timeshift recordings and schedules cleanup', () => {
+    const { startTimeshiftServices } = require('../../lib/timeshiftStartup');
     const engine = { initialize: vi.fn(), runCleanup: vi.fn(), shutdown: vi.fn() };
     const schedule = { scheduleJob: vi.fn() };
     startTimeshiftServices({ engine, schedule, cleanupIntervalMinutes: 5, processLike: fakeProcess() });
