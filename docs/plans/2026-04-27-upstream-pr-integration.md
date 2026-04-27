@@ -297,6 +297,8 @@ try {
   } catch {
     execFileSync('git', ['remote', 'add', 'upstream', 'https://github.com/ardoviniandrea/ViniPlay.git'], { stdio: 'pipe' });
   }
+  const dirty = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim();
+  if (dirty) throw new Error('Refusing to check PR order with uncommitted changes. Commit or stash first.');
   execFileSync('git', ['fetch', 'upstream',
     'refs/pull/109/head:refs/remotes/upstream/pr/109',
     'refs/pull/114/head:refs/remotes/upstream/pr/114',
@@ -499,7 +501,7 @@ describe('server runtime paths', () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vp-data-'));
     const dvrDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vp-dvr-'));
     const child = spawn(process.execPath, ['server.js'], {
-      env: { ...process.env, DATA_DIR: dataDir, DVR_DIR: dvrDir, SESSION_SECRET: 'test-secret' }
+      env: { ...process.env, DATA_DIR: dataDir, DVR_DIR: dvrDir, SESSION_SECRET: 'test-secret', PORT: '0' }
     });
     const output = await new Promise((resolve) => {
       let combined = '';
@@ -531,11 +533,17 @@ describe('server runtime paths', () => {
 npm test tests/integration/server-paths.test.js
 ```
 
-Expected: FAIL because `server.js` still hard-codes `/data` and `/dvr`.
+Expected: FAIL because `server.js` still hard-codes `/data`, `/dvr`, and port `8998`.
 
 **Step 3: Integrate into `server.js`**
 
-Replace hard-coded path constants with:
+Replace hard-coded path constants and make the server port test-isolatable:
+
+```js
+const port = Number(process.env.PORT || 8998);
+```
+
+Then replace path constants with:
 
 ```js
 const { resolveRuntimePaths } = require('./lib/paths');
@@ -1232,18 +1240,20 @@ const { makeTimeshiftTestApp } = require('../helpers/makeTimeshiftTestApp');
 
 describe('timeshift routes', () => {
   it('requires admin for POST /api/timeshift/channels', async () => {
-    const app = makeTimeshiftTestApp({ session: { userId: 2, isAdmin: false } });
+    const { registerTimeshiftRoutes } = require('../../lib/timeshiftRoutes');
+    const app = makeTimeshiftTestApp({ session: { userId: 2, isAdmin: false }, registerTimeshiftRoutes });
     await request(app).post('/api/timeshift/channels').send({ channelId: 'c1', channelName: 'One' }).expect(403);
   });
 
   it('rejects path traversal segment names', async () => {
-    const app = makeTimeshiftTestApp({ session: { userId: 1, isAdmin: true } });
+    const { registerTimeshiftRoutes } = require('../../lib/timeshiftRoutes');
+    const app = makeTimeshiftTestApp({ session: { userId: 1, isAdmin: true }, registerTimeshiftRoutes });
     await request(app).get('/api/timeshift/stream/c1/..%2F..%2Fetc%2Fpasswd').expect(400);
   });
 });
 ```
 
-Create `tests/helpers/makeTimeshiftTestApp.js` in Step 1 before the test file. It must build an Express app, inject `req.session` from the provided options, and call `registerTimeshiftRoutes(app, deps)` from inside each test callback so missing route modules fail during test execution, not collection.
+Create `tests/helpers/makeTimeshiftTestApp.js` in Step 1 before the test file. It must export `makeTimeshiftTestApp({ session, registerTimeshiftRoutes, deps })`, build an Express app, inject `req.session` from the provided options, and call the `registerTimeshiftRoutes` function passed by the test. The helper must not require `lib/timeshiftRoutes.js` itself; each `it(...)` callback requires `lib/timeshiftRoutes.js` and passes the function into the helper so missing route modules fail during test execution, not collection.
 
 Additional required assertions:
 
@@ -1505,48 +1515,67 @@ git commit -m "feat: initialize timeshift engine on startup"
 
 ## Milestone 6: Final Integration Verification and PR Assessment
 
-### S-601: Produce PR assessment report
+### S-601: Produce PR assessment report with automated structure validation
 
 **Files:**
 - Create: `docs/plans/2026-04-27-upstream-pr-assessment.md`
+- Create: `scripts/validate-pr-assessment.js`
+- Create: `tests/integration/pr-assessment.test.js`
 
-**Step 1: Write report skeleton**
+**Step 1: Write failing validation test**
 
-Include sections:
+Create `tests/integration/pr-assessment.test.js`:
 
-```md
-# Upstream PR Assessment
+```js
+const { describe, expect, it } = require('vitest');
+const { spawnSync } = require('child_process');
 
-## PR #116
-- Verdict:
-- Accepted changes:
-- Corrections made:
-- Tests:
-
-## PR #114
-...
-
-## PR #119
-...
-
-## PR #109
-...
+describe('PR assessment report', () => {
+  it('contains required assessment sections for every integrated PR', () => {
+    const result = spawnSync(process.execPath, ['scripts/validate-pr-assessment.js'], { encoding: 'utf8' });
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+  });
+});
 ```
 
-**Step 2: Fill with evidence**
-
-For each PR, document:
-
-- original upstream intent
-- implementation correctness assessment
-- corrections made in this fork
-- tests added
-- manual verification performed
-
-**Step 3: Commit**
+**Step 2: Run test to verify it fails**
 
 ```bash
-git add docs/plans/2026-04-27-upstream-pr-assessment.md
+npm test tests/integration/pr-assessment.test.js
+```
+
+Expected: FAIL because the validator and report do not exist.
+
+**Step 3: Implement validator and report**
+
+Create `scripts/validate-pr-assessment.js` that reads `docs/plans/2026-04-27-upstream-pr-assessment.md` and asserts each PR section exists for `#116`, `#114`, `#119`, and `#109`, with these required labels under each section:
+
+```md
+- Verdict:
+- Upstream intent:
+- Implementation correctness:
+- Accepted changes:
+- Corrections made:
+- Tests added:
+- Manual verification:
+```
+
+Then create the report and fill it with evidence from the completed stories.
+
+**Step 4: Verify**
+
+```bash
+npm test tests/integration/pr-assessment.test.js
+npm run check:syntax
+npm run check:diff
+```
+
+Expected: PASS.
+
+**Step 5: Commit**
+
+```bash
+git add docs/plans/2026-04-27-upstream-pr-assessment.md scripts/validate-pr-assessment.js tests/integration/pr-assessment.test.js
 git commit -m "docs: document upstream pr integration assessment"
 ```
 
