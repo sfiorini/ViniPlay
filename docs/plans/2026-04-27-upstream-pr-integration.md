@@ -68,6 +68,11 @@ describe('test harness', () => {
   it('runs a baseline test', () => {
     expect(1 + 1).toBe(2);
   });
+
+  it('can dynamically import frontend ES modules from Vitest', async () => {
+    const icons = await import('../../public/js/modules/icons.js');
+    expect(icons.ICONS).toBeTruthy();
+  });
 });
 ```
 
@@ -238,92 +243,16 @@ git add lib/paths.js tests/unit/paths.test.js
 git commit -m "test: cover runtime path resolution"
 ```
 
-### S-103: Validate upstream PR dependency and merge order assumptions
+### S-103: Fetch upstream PR refs before integration
 
-**Files:**
-- Create: `tests/integration/pr-order.test.js`
-- Create: `scripts/check-pr-order.js`
-- Modify: `package.json`
-
-**Step 1: Write the failing test**
-
-Create `tests/integration/pr-order.test.js` that executes `node scripts/check-pr-order.js` and asserts it exits successfully. The script must validate the chosen order `116 -> 114 -> 119 -> 109` using only existing local refs and `git merge-tree`. It must not add remotes, fetch network refs, create worktrees, commit, or mutate repository state.
-
-Test case:
-
-```js
-const { describe, expect, it } = require('vitest');
-const { spawnSync } = require('child_process');
-
-describe('upstream PR integration order', () => {
-  it('can merge PRs 116, 114, 119, 109 sequentially without conflicts', () => {
-    const result = spawnSync(process.execPath, ['scripts/check-pr-order.js'], { encoding: 'utf8' });
-    expect(result.status, result.stderr || result.stdout).toBe(0);
-  });
-});
-```
-
-**Step 2: Run test to verify it fails**
+This is a preflight command, not an automated test story, because fetching refs and validating merge results require git/network state outside the application. Run it once before Milestone 2 if the refs are missing:
 
 ```bash
-npm test tests/integration/pr-order.test.js
-```
-
-Expected: FAIL because `scripts/check-pr-order.js` does not exist.
-
-**Step 3: Implement order check script**
-
-Precondition for this story: fetch PR refs outside the test harness before running the plan if they are missing:
-
-```bash
+git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/ardoviniandrea/ViniPlay.git
 git fetch upstream refs/pull/109/head:refs/remotes/upstream/pr/109 refs/pull/114/head:refs/remotes/upstream/pr/114 refs/pull/116/head:refs/remotes/upstream/pr/116 refs/pull/119/head:refs/remotes/upstream/pr/119
 ```
 
-Create `scripts/check-pr-order.js` as a read-only local-ref validator:
-
-```js
-const { execFileSync } = require('child_process');
-
-const order = ['116', '114', '119', '109'];
-let base = 'HEAD';
-
-for (const pr of order) {
-  const ref = `upstream/pr/${pr}`;
-  execFileSync('git', ['rev-parse', '--verify', ref], { stdio: 'pipe' });
-  const mergeBase = execFileSync('git', ['merge-base', base, ref], { encoding: 'utf8' }).trim();
-  const output = execFileSync('git', ['merge-tree', mergeBase, base, ref], { encoding: 'utf8' });
-  if (output.includes('<<<<<<<') || output.includes('changed in both') || output.includes('added in both')) {
-    throw new Error(`PR ${pr} has merge conflicts in planned order`);
-  }
-  base = ref;
-}
-```
-
-This script reads refs only. It does not fetch, add remotes, create worktrees, commit, or modify repository state.
-
-Add script:
-
-```json
-"check:pr-order": "node scripts/check-pr-order.js"
-```
-
-**Step 4: Verify**
-
-```bash
-npm test tests/integration/pr-order.test.js
-npm run check:pr-order
-npm run check:syntax
-npm run check:diff
-```
-
-Expected: PASS.
-
-**Step 5: Commit**
-
-```bash
-git add package.json scripts/check-pr-order.js tests/integration/pr-order.test.js
-git commit -m "test: validate upstream pr merge order"
-```
+Sequential integration safety is enforced by the story order itself: merge/apply exactly one PR milestone at a time, run that milestone’s tests, and commit before moving to the next PR. If a later milestone conflicts, stop and resolve it under that milestone with a failing regression test.
 
 ---
 
@@ -587,15 +516,35 @@ git commit -m "fix: support local runtime data directories"
 
 Create `tests/unit/image-proxy.test.js` with Supertest/Nock against a tiny Express app using the extracted handler. Require `../../lib/imageProxy` inside each `it(...)` callback so the missing module fails during test execution, not collection.
 
-Required assertions:
+Minimum executable test code:
 
-- rejects missing url with 400
-- rejects invalid URL with 400
-- rejects non-http protocols such as file:
-- follows a relative HTTP redirect to an image
-- rejects redirect loops after five redirects
-- rejects non-image content types
-- serves a cached image on the second request with X-Cache HIT
+```js
+const { describe, expect, it } = require('vitest');
+const express = require('express');
+const request = require('supertest');
+
+function appWithHandler(handler) {
+  const app = express();
+  app.get('/api/image-proxy', handler);
+  return app;
+}
+
+describe('image proxy handler', () => {
+  it('rejects missing url with 400', async () => {
+    const { createImageProxyHandler } = require('../../lib/imageProxy');
+    const app = appWithHandler(createImageProxyHandler({ imageCacheDir: '/tmp/cache' }));
+    await request(app).get('/api/image-proxy').expect(400);
+  });
+
+  it('rejects non-http protocols such as file:', async () => {
+    const { createImageProxyHandler } = require('../../lib/imageProxy');
+    const app = appWithHandler(createImageProxyHandler({ imageCacheDir: '/tmp/cache' }));
+    await request(app).get('/api/image-proxy').query({ url: 'file:///etc/passwd' }).expect(400);
+  });
+});
+```
+
+Add executable callbacks for invalid URL, relative HTTP redirect, redirect loop, non-image content type, and cache HIT.
 
 **Step 2: Run test to verify it fails**
 
@@ -670,12 +619,26 @@ export function toImageProxyUrl(url) {
 }
 ```
 
-Test:
+Minimum executable test code:
 
-- wraps http logos with /api/image-proxy
-- wraps https logos with /api/image-proxy
-- does not wrap relative or data URLs
-- does not wrap empty values
+```js
+import { describe, expect, it } from 'vitest';
+
+describe('toImageProxyUrl', () => {
+  it('wraps http logos with /api/image-proxy', async () => {
+    const { toImageProxyUrl } = await import('../../public/js/modules/imageProxyUrl.js');
+    expect(toImageProxyUrl('http://logo.test/a.png')).toBe('/api/image-proxy?url=http%3A%2F%2Flogo.test%2Fa.png');
+  });
+
+  it('does not wrap relative or data URLs', async () => {
+    const { toImageProxyUrl } = await import('../../public/js/modules/imageProxyUrl.js');
+    expect(toImageProxyUrl('/local.png')).toBe('/local.png');
+    expect(toImageProxyUrl('data:image/png;base64,abc')).toBe('data:image/png;base64,abc');
+  });
+});
+```
+
+Add executable callbacks for https logos and empty values.
 
 **Step 2: Run test to verify it fails**
 
@@ -729,16 +692,7 @@ git commit -m "fix: proxy external channel logos"
 
 Create tests for `public/js/modules/castUrl.js`. Import `buildCastStreamUrl` with dynamic `await import(...)` inside each `it(...)` callback so the missing module fails during test execution, not collection.
 
-Required assertions:
-
-- replaces existing profileId with active cast profile
-- appends cast profile when no profileId exists
-- leaves URL unchanged when it already uses active cast profile
-- builds /stream URL for redirect profiles using encoded raw stream URL
-- converts relative cast URLs to absolute URLs
-- preserves provider-qualified userAgentId when present
-
-Minimum executable test code:
+Minimum executable test code covers redirect URL building and profile replacement. Add the same executable callback pattern for appending a missing cast profile, leaving an already-correct profile unchanged, converting relative URLs to absolute URLs, and preserving provider-qualified user-agent IDs:
 
 ```js
 import { describe, expect, it } from 'vitest';
@@ -1139,14 +1093,7 @@ describe('timeshift engine', () => {
 });
 ```
 
-Additional required executable assertions:
-
-- `start()` creates the channel-specific HLS directory
-- `start()` spawns `ffmpeg` with `-f hls`, `-hls_time`, and segment filename args
-- `stop()` kills the process and removes active status
-- unexpected exit schedules restart only when DB still marks the channel enabled
-- disabled channel exit does not restart
-- `shutdown()` stops all active processes
+Add the same executable callback pattern for: channel-specific HLS directory creation; `ffmpeg` args containing `-f hls`, `-hls_time`, and segment filename; `stop()` killing the process and removing active status; unexpected exit restart only when DB marks the channel enabled; disabled channel exit not restarting; and `shutdown()` stopping all active processes.
 
 **Step 2: Run test to verify it fails**
 
@@ -1241,11 +1188,7 @@ describe('timeshift playlist generation', () => {
 });
 ```
 
-Additional required assertions:
-
-- deletes only segments older than max duration plus safety buffer
-- does not delete playlist or metadata files
-- uses configured target duration
+Add the same executable callback pattern for deleting only segments older than max duration plus safety buffer, preserving playlist/metadata files, and using configured target duration.
 
 **Step 2: Run test to verify it fails**
 
@@ -1317,15 +1260,7 @@ describe('timeshift routes', () => {
 
 Create `tests/helpers/makeTimeshiftTestApp.js` in Step 1 before the test file. It must export `makeTimeshiftTestApp({ session, registerTimeshiftRoutes, deps })`, build an Express app, inject `req.session` from the provided options, and call the `registerTimeshiftRoutes` function passed by the test. The helper must not require `lib/timeshiftRoutes.js` itself; each `it(...)` callback requires `lib/timeshiftRoutes.js` and passes the function into the helper so missing route modules fail during test execution, not collection.
 
-Additional required assertions:
-
-- requires admin for GET `/api/timeshift/channels`
-- validates `channelId` and `channelName` on POST
-- upserts channel config and starts recording when enabled
-- updates max duration and enabled flag
-- stops recording when disabling a channel
-- deletes channel config and stops recording
-- requires auth for playlist and segment endpoints
+Add the same executable Supertest callback pattern for: admin requirement on GET `/api/timeshift/channels`; validating `channelId` and `channelName`; upserting enabled channel config and starting recording; updating max duration/enabled flag; stopping recording when disabling; deleting config and stopping recording; and requiring auth for playlist and segment endpoints.
 
 **Step 2: Run test to verify it fails**
 
@@ -1399,13 +1334,7 @@ describe('timeshift player behavior', () => {
 });
 ```
 
-Additional required assertions:
-
-- uses Hls playback when timeshift is enabled and recording
-- shows timeshift controls only during timeshift playback
-- cleans up timeshift intervals and UI on stop
-- `seekToLive()` seeks near the finite live edge
-- `seekTimeshiftRelative()` clamps seek range
+Add the same executable jsdom callback pattern for: Hls playback when timeshift is enabled and recording; showing controls only during timeshift playback; cleaning intervals/UI on stop; `seekToLive()` seeking near finite live edge; and `seekTimeshiftRelative()` clamping seek range.
 
 **Step 2: Run test to verify it fails**
 
@@ -1468,13 +1397,7 @@ describe('timeshift settings UI', () => {
 });
 ```
 
-Additional required assertions:
-
-- loads configured timeshift channels and status
-- populates channel selector from `guideState.channels`
-- creates a timeshift channel via POST
-- updates an existing timeshift channel via PUT
-- removes a timeshift channel via DELETE after confirmation
+Add the same executable jsdom callback pattern for: loading configured channels/status; populating the selector from `guideState.channels`; creating via POST; updating via PUT; and removing via DELETE after confirmation.
 
 **Step 2: Run test to verify it fails**
 
@@ -1540,9 +1463,7 @@ describe('timeshift startup wiring', () => {
 });
 ```
 
-Additional required assertion:
-
-- SIGINT and SIGTERM handlers call `engine.shutdown()`
+Add an executable callback asserting SIGINT and SIGTERM handlers call `engine.shutdown()`.
 
 **Step 2: Run test to verify it fails**
 
@@ -1668,7 +1589,6 @@ Create `scripts/smoke-local-start.js` using only Node built-ins: `child_process.
 ```bash
 npm test
 npm run check:syntax
-npm run check:pr-order
 npm run check:diff
 ```
 
