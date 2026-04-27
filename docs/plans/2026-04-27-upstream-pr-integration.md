@@ -30,7 +30,7 @@ For every story:
 5. Run the relevant syntax/static checks.
 6. Commit the story.
 
-Do not batch multiple PRs into one unreviewable commit.
+Do not batch multiple PRs into one unreviewable commit. Do not write Vitest todo tests: every `it(...)` must include an executable callback with at least one assertion. Backend tests use CommonJS `require`; frontend test files that touch DOM APIs must start with `// @vitest-environment jsdom` and may import browser ES modules.
 
 ## Baseline Commands
 
@@ -38,10 +38,11 @@ Use these commands throughout the plan:
 
 ```bash
 npm test
-npm run test:watch -- --run
 npm run check:syntax
 npm run check:diff
 ```
+
+`check:syntax` uses `node --check` as a syntax parser only; it does not execute modules and can parse frontend ES module syntax in `.js` files.
 
 Expected final result: all commands pass and `git status --short` is clean after each commit.
 
@@ -266,6 +267,13 @@ Expected: FAIL because `scripts/check-pr-order.js` does not exist.
 
 **Step 3: Implement order check script**
 
+The script must fetch missing PR refs before validating order:
+
+```bash
+git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/ardoviniandrea/ViniPlay.git
+git fetch upstream refs/pull/109/head:refs/remotes/upstream/pr/109 refs/pull/114/head:refs/remotes/upstream/pr/114 refs/pull/116/head:refs/remotes/upstream/pr/116 refs/pull/119/head:refs/remotes/upstream/pr/119
+```
+
 Create `scripts/check-pr-order.js`:
 
 ```js
@@ -278,6 +286,17 @@ const order = ['116', '114', '119', '109'];
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'viniplay-pr-order-'));
 
 try {
+  try {
+    execFileSync('git', ['remote', 'get-url', 'upstream'], { stdio: 'pipe' });
+  } catch {
+    execFileSync('git', ['remote', 'add', 'upstream', 'https://github.com/ardoviniandrea/ViniPlay.git'], { stdio: 'pipe' });
+  }
+  execFileSync('git', ['fetch', 'upstream',
+    'refs/pull/109/head:refs/remotes/upstream/pr/109',
+    'refs/pull/114/head:refs/remotes/upstream/pr/114',
+    'refs/pull/116/head:refs/remotes/upstream/pr/116',
+    'refs/pull/119/head:refs/remotes/upstream/pr/119'
+  ], { stdio: 'pipe' });
   for (const pr of order) {
     execFileSync('git', ['rev-parse', '--verify', `upstream/pr/${pr}`], { stdio: 'pipe' });
   }
@@ -331,15 +350,53 @@ git commit -m "test: validate upstream pr merge order"
 
 Create `tests/frontend/mobile-nav.test.js` against the concrete helper module `public/js/modules/mobileNav.js`. Use jsdom fixtures containing `#mobile-nav-menu` and `#mobile-menu-overlay`.
 
-Test cases:
+Use this executable test code; it must fail initially because the helper module does not exist:
 
 ```js
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import { openMobileMenuElements, closeMobileMenuElements } from '../../public/js/modules/mobileNav.js';
 
-it('openMobileMenuElements shows menu and overlay');
-it('closeMobileMenuElements waits for transform transition before hiding menu');
-it('closeMobileMenuElements ignores non-transform transitionend events');
+function fixture() {
+  document.body.innerHTML = `
+    <div id="mobile-nav-menu" class="hidden -translate-x-full flex-col"></div>
+    <div id="mobile-menu-overlay" class="hidden"></div>
+  `;
+  return {
+    menu: document.getElementById('mobile-nav-menu'),
+    overlay: document.getElementById('mobile-menu-overlay'),
+    body: document.body
+  };
+}
+
+describe('mobile navigation helpers', () => {
+  it('openMobileMenuElements shows menu and overlay', () => {
+    const els = fixture();
+    openMobileMenuElements(els);
+    expect(els.menu.classList.contains('hidden')).toBe(false);
+    expect(els.menu.classList.contains('-translate-x-full')).toBe(false);
+    expect(els.menu.classList.contains('translate-x-0')).toBe(true);
+    expect(els.overlay.classList.contains('hidden')).toBe(false);
+    expect(document.body.classList.contains('overflow-hidden')).toBe(true);
+  });
+
+  it('closeMobileMenuElements waits for transform transition before hiding menu', () => {
+    const els = fixture();
+    openMobileMenuElements(els);
+    closeMobileMenuElements(els);
+    expect(els.menu.classList.contains('hidden')).toBe(false);
+    els.menu.dispatchEvent(new TransitionEvent('transitionend', { propertyName: 'transform' }));
+    expect(els.menu.classList.contains('hidden')).toBe(true);
+  });
+
+  it('closeMobileMenuElements ignores non-transform transitionend events', () => {
+    const els = fixture();
+    openMobileMenuElements(els);
+    closeMobileMenuElements(els);
+    els.menu.dispatchEvent(new TransitionEvent('transitionend', { propertyName: 'background-color' }));
+    expect(els.menu.classList.contains('hidden')).toBe(false);
+  });
+});
 ```
 
 **Step 2: Run test to verify it fails**
@@ -416,11 +473,41 @@ git commit -m "fix: stabilize mobile navigation transition handling"
 
 Create `tests/integration/server-paths.test.js` that starts `server.js` in a child process with temporary `DATA_DIR`, `DVR_DIR`, and `SESSION_SECRET` values. The test must assert that startup logs include the temporary data directory and that the process creates both temp directories instead of `/data` and `/dvr`.
 
-Test cases:
+Use executable tests like:
 
 ```js
-it('server startup honors DATA_DIR and DVR_DIR environment overrides');
-it('Dockerfile declares DATA_DIR=/data and DVR_DIR=/dvr defaults');
+const { describe, expect, it } = require('vitest');
+const { spawn } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+describe('server runtime paths', () => {
+  it('server startup honors DATA_DIR and DVR_DIR environment overrides', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vp-data-'));
+    const dvrDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vp-dvr-'));
+    const child = spawn(process.execPath, ['server.js'], {
+      env: { ...process.env, DATA_DIR: dataDir, DVR_DIR: dvrDir, SESSION_SECRET: 'test-secret' }
+    });
+    const output = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('server startup timeout')), 8000);
+      child.stdout.on('data', chunk => {
+        const text = chunk.toString();
+        if (text.includes('Application starting')) { clearTimeout(timer); resolve(text); }
+      });
+      child.stderr.on('data', chunk => reject(new Error(chunk.toString())));
+    }).finally(() => child.kill('SIGTERM'));
+    expect(output).toContain(dataDir);
+    expect(fs.existsSync(dataDir)).toBe(true);
+    expect(fs.existsSync(dvrDir)).toBe(true);
+  });
+
+  it('Dockerfile declares DATA_DIR=/data and DVR_DIR=/dvr defaults', () => {
+    const dockerfile = fs.readFileSync('Dockerfile', 'utf8');
+    expect(dockerfile).toMatch(/^ENV DATA_DIR=\/data$/m);
+    expect(dockerfile).toMatch(/^ENV DVR_DIR=\/dvr$/m);
+  });
+});
 ```
 
 **Step 2: Run test to verify it fails**
@@ -505,15 +592,13 @@ Create `tests/unit/image-proxy.test.js` with Supertest/Nock against a tiny Expre
 
 Required tests:
 
-```js
-it('rejects missing url with 400');
-it('rejects invalid URL with 400');
-it('rejects non-http protocols such as file:');
-it('follows a relative HTTP redirect to an image');
-it('rejects redirect loops after five redirects');
-it('rejects non-image content types');
-it('serves a cached image on the second request with X-Cache HIT');
-```
+- rejects missing url with 400
+- rejects invalid URL with 400
+- rejects non-http protocols such as file:
+- follows a relative HTTP redirect to an image
+- rejects redirect loops after five redirects
+- rejects non-image content types
+- serves a cached image on the second request with X-Cache HIT
 
 **Step 2: Run test to verify it fails**
 
@@ -590,12 +675,10 @@ export function toImageProxyUrl(url) {
 
 Test:
 
-```js
-it('wraps http logos with /api/image-proxy');
-it('wraps https logos with /api/image-proxy');
-it('does not wrap relative or data URLs');
-it('does not wrap empty values');
-```
+- wraps http logos with /api/image-proxy
+- wraps https logos with /api/image-proxy
+- does not wrap relative or data URLs
+- does not wrap empty values
 
 **Step 2: Run test to verify it fails**
 
@@ -649,14 +732,12 @@ git commit -m "fix: proxy external channel logos"
 
 Create tests for:
 
-```js
-it('replaces existing profileId with active cast profile');
-it('appends cast profile when no profileId exists');
-it('leaves URL unchanged when it already uses active cast profile');
-it('builds /stream URL for redirect profiles using encoded raw stream URL');
-it('converts relative cast URLs to absolute URLs');
-it('preserves provider-qualified userAgentId when present');
-```
+- replaces existing profileId with active cast profile
+- appends cast profile when no profileId exists
+- leaves URL unchanged when it already uses active cast profile
+- builds /stream URL for redirect profiles using encoded raw stream URL
+- converts relative cast URLs to absolute URLs
+- preserves provider-qualified userAgentId when present
 
 Example expected redirect result:
 
@@ -770,10 +851,22 @@ git commit -m "fix: refresh local stream after cast ends"
 
 **Step 1: Write failing test**
 
-Test `public/index.html` contains an HLS.js script before module scripts that use `Hls`:
+Use executable test code:
 
 ```js
-it('loads hls.js for timeshift playback before app module scripts');
+const { describe, expect, it } = require('vitest');
+const fs = require('fs');
+
+describe('timeshift HLS dependency', () => {
+  it('loads hls.js for timeshift playback before app module scripts', () => {
+    const html = fs.readFileSync('public/index.html', 'utf8');
+    const hlsIndex = html.indexOf('hls.js');
+    const mainModuleIndex = html.indexOf('type="module"');
+    expect(hlsIndex).toBeGreaterThan(-1);
+    expect(mainModuleIndex).toBeGreaterThan(-1);
+    expect(hlsIndex).toBeLessThan(mainModuleIndex);
+  });
+});
 ```
 
 **Step 2: Run test to verify it fails**
@@ -820,17 +913,31 @@ git commit -m "fix: load hls.js for timeshift playback"
 
 **Step 1: Write failing tests**
 
-Test that `getSettings()`-equivalent logic includes:
+Use executable tests:
 
 ```js
-settings.timeshift.segmentDurationSeconds === 6
-settings.timeshift.cleanupIntervalMinutes === 5
-settings.timeshift.safetyBufferMinutes === 10
-settings.timeshift.hlsListSize === 0
-settings.timeshift.hlsDeleteThreshold === 10
-```
+const { describe, expect, it } = require('vitest');
+const { mergeSettingsWithDefaults } = require('../../lib/settingsDefaults');
 
-Also test partial existing settings are migrated without deleting user values.
+describe('timeshift settings defaults', () => {
+  it('adds complete timeshift defaults to empty settings', () => {
+    const settings = mergeSettingsWithDefaults({});
+    expect(settings.timeshift).toMatchObject({
+      segmentDurationSeconds: 6,
+      cleanupIntervalMinutes: 5,
+      safetyBufferMinutes: 10,
+      hlsListSize: 0,
+      hlsDeleteThreshold: 10
+    });
+  });
+
+  it('preserves existing user timeshift values during migration', () => {
+    const settings = mergeSettingsWithDefaults({ timeshift: { segmentDurationSeconds: 4 } });
+    expect(settings.timeshift.segmentDurationSeconds).toBe(4);
+    expect(settings.timeshift.cleanupIntervalMinutes).toBe(5);
+  });
+});
+```
 
 **Step 2: Run test to verify it fails**
 
@@ -869,14 +976,30 @@ git commit -m "feat: add timeshift settings defaults"
 
 **Step 1: Write failing test**
 
-Test schema creation creates `timeshift_channels` with:
+Use executable tests:
 
-- `channel_id TEXT PRIMARY KEY`
-- `channel_name TEXT NOT NULL`
-- `max_duration_hours INTEGER DEFAULT 3`
-- `is_enabled INTEGER DEFAULT 1`
-- `created_at TEXT DEFAULT CURRENT_TIMESTAMP`
-- `updated_at TEXT DEFAULT CURRENT_TIMESTAMP`
+```js
+const { describe, expect, it } = require('vitest');
+const sqlite3 = require('sqlite3').verbose();
+const { initializeSchema } = require('../../lib/schema');
+
+describe('timeshift schema', () => {
+  it('creates the timeshift_channels table with required columns', async () => {
+    const db = new sqlite3.Database(':memory:');
+    await initializeSchema(db);
+    const columns = await new Promise((resolve, reject) => {
+      db.all('PRAGMA table_info(timeshift_channels)', [], (err, rows) => err ? reject(err) : resolve(rows));
+    });
+    const byName = Object.fromEntries(columns.map(c => [c.name, c]));
+    expect(byName.channel_id.pk).toBe(1);
+    expect(byName.channel_name.notnull).toBe(1);
+    expect(byName.max_duration_hours.dflt_value).toContain('3');
+    expect(byName.is_enabled.dflt_value).toContain('1');
+    expect(byName.created_at.dflt_value).toContain('CURRENT_TIMESTAMP');
+    expect(byName.updated_at.dflt_value).toContain('CURRENT_TIMESTAMP');
+  });
+});
+```
 
 **Step 2: Run test to verify it fails**
 
@@ -906,29 +1029,41 @@ git add server.js lib/schema.js tests/unit/timeshift-schema.test.js
 git commit -m "feat: add timeshift channel schema"
 ```
 
-### S-504: Extract and test timeshift engine process lifecycle
+### S-504: Extract M3U parser and test timeshift engine process lifecycle
 
 **Files:**
+- Create: `lib/m3uParser.js`
 - Create: `lib/timeshiftEngine.js`
 - Modify: `server.js`
+- Test: `tests/unit/m3u-parser.test.js`
 - Test: `tests/unit/timeshift-engine.test.js`
 
 **Step 1: Write failing tests**
 
-Use fake `spawn`, fake `fs`, and fake DB callbacks.
-
-Required cases:
+First write `tests/unit/m3u-parser.test.js` to lock the existing `parseM3U()` behavior before extracting it from `server.js`:
 
 ```js
-it('does not start a duplicate process for the same channel');
-it('returns without spawning when channel is missing from parsed M3U');
-it('creates channel-specific HLS directory');
-it('spawns ffmpeg with HLS segment settings');
-it('removes process on intentional stop');
-it('restarts an unexpectedly exited enabled channel after delay');
-it('does not restart a disabled channel');
-it('shuts down all active processes');
+const { describe, expect, it } = require('vitest');
+const { parseM3U } = require('../../lib/m3uParser');
+
+describe('parseM3U', () => {
+  it('parses channel id, name, logo, group, and URL from M3U content', () => {
+    const result = parseM3U('#EXTM3U\n#EXTINF:-1 tvg-id="bbc" tvg-logo="logo.png" group-title="News",BBC News\nhttp://example.test/live.ts');
+    expect(result[0]).toMatchObject({ id: 'bbc', name: 'BBC News', logo: 'logo.png', group: 'News', url: 'http://example.test/live.ts' });
+  });
+});
 ```
+
+Then write `tests/unit/timeshift-engine.test.js` with fake `spawn`, fake `fs`, and fake DB callbacks. Required executable assertions:
+
+- duplicate `start()` calls for the same channel leave `spawn` called once
+- missing parsed channel URL leaves `spawn` uncalled
+- `start()` creates the channel-specific HLS directory
+- `start()` spawns `ffmpeg` with `-f hls`, `-hls_time`, and segment filename args
+- `stop()` kills the process and removes active status
+- unexpected exit schedules restart only when DB still marks the channel enabled
+- disabled channel exit does not restart
+- `shutdown()` stops all active processes
 
 **Step 2: Run test to verify it fails**
 
@@ -940,7 +1075,7 @@ Expected: FAIL.
 
 **Step 3: Implement engine**
 
-Create `createTimeshiftEngine({ db, fs, path, spawn, parseM3U, getSettings, liveChannelsPath, timeshiftDir, setTimeout })` with methods:
+Create `lib/m3uParser.js` by moving the existing `parseM3U()` from `server.js` without behavior changes. Then create `createTimeshiftEngine({ db, fs, path, spawn, parseM3U, getSettings, liveChannelsPath, timeshiftDir, setTimeout })` with methods:
 
 - `start(channelId, channelName)`
 - `stop(channelId)`
@@ -956,7 +1091,7 @@ Do not leave process state hidden in `server.js`.
 **Step 4: Verify**
 
 ```bash
-npm test tests/unit/timeshift-engine.test.js
+npm test tests/unit/m3u-parser.test.js tests/unit/timeshift-engine.test.js
 npm run check:syntax
 npm run check:diff
 ```
@@ -966,7 +1101,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add lib/timeshiftEngine.js server.js tests/unit/timeshift-engine.test.js
+git add lib/m3uParser.js lib/timeshiftEngine.js server.js tests/unit/m3u-parser.test.js tests/unit/timeshift-engine.test.js
 git commit -m "feat: add tested timeshift engine"
 ```
 
@@ -978,15 +1113,31 @@ git commit -m "feat: add tested timeshift engine"
 
 **Step 1: Write failing tests**
 
-Required cases:
+Use executable tests. At minimum include this media-sequence test plus the listed assertions:
 
 ```js
-it('deletes only segments older than max duration plus safety buffer');
-it('does not delete playlist or metadata files');
-it('generates media sequence from first remaining segment number');
-it('omits EXT-X-ENDLIST for live playlists');
-it('uses configured target duration');
+const { describe, expect, it } = require('vitest');
+const { createTimeshiftEngine } = require('../../lib/timeshiftEngine');
+
+describe('timeshift playlist generation', () => {
+  it('generates media sequence from first remaining segment number and omits ENDLIST', () => {
+    const writes = new Map();
+    const fs = fakeSegmentFs(['segment_00000007.ts', 'segment_00000008.ts'], writes);
+    const engine = createTimeshiftEngine(fakeDeps({ fs }));
+    engine.regeneratePlaylist('chan1');
+    const playlist = writes.get('/timeshift/chan1/playlist.m3u8');
+    expect(playlist).toContain('#EXT-X-MEDIA-SEQUENCE:7');
+    expect(playlist).toContain('#EXT-X-TARGETDURATION:6');
+    expect(playlist).not.toContain('#EXT-X-ENDLIST');
+  });
+});
 ```
+
+Additional required assertions:
+
+- deletes only segments older than max duration plus safety buffer
+- does not delete playlist or metadata files
+- uses configured target duration
 
 **Step 2: Run test to verify it fails**
 
@@ -1026,18 +1177,35 @@ git commit -m "feat: manage timeshift segment cleanup and playlists"
 
 **Step 1: Write failing API tests**
 
-Create `lib/timeshiftRoutes.js` with `registerTimeshiftRoutes(app, deps)` and test it with a small Express app factory instead of starting the real server. Required cases:
+Create `lib/timeshiftRoutes.js` with `registerTimeshiftRoutes(app, deps)` and test it with a small Express app factory instead of starting the real server. Use executable Supertest tests. At minimum include:
 
 ```js
-it('requires admin for GET /api/timeshift/channels');
-it('requires admin for POST /api/timeshift/channels');
-it('validates channelId and channelName on POST');
-it('upserts channel config and starts recording when enabled');
-it('updates max duration and enabled flag');
-it('stops recording when disabling a channel');
-it('deletes channel config and stops recording');
-it('requires auth for playlist and segment endpoints');
+const { describe, expect, it } = require('vitest');
+const request = require('supertest');
+const { makeTimeshiftTestApp } = require('../helpers/makeTimeshiftTestApp');
+
+describe('timeshift routes', () => {
+  it('requires admin for POST /api/timeshift/channels', async () => {
+    const app = makeTimeshiftTestApp({ session: { userId: 2, isAdmin: false } });
+    await request(app).post('/api/timeshift/channels').send({ channelId: 'c1', channelName: 'One' }).expect(403);
+  });
+
+  it('rejects path traversal segment names', async () => {
+    const app = makeTimeshiftTestApp({ session: { userId: 1, isAdmin: true } });
+    await request(app).get('/api/timeshift/stream/c1/..%2F..%2Fetc%2Fpasswd').expect(400);
+  });
+});
 ```
+
+Additional required assertions:
+
+- requires admin for GET `/api/timeshift/channels`
+- validates `channelId` and `channelName` on POST
+- upserts channel config and starts recording when enabled
+- updates max duration and enabled flag
+- stops recording when disabling a channel
+- deletes channel config and stops recording
+- requires auth for playlist and segment endpoints
 
 **Step 2: Run test to verify it fails**
 
@@ -1093,17 +1261,31 @@ git commit -m "feat: add timeshift management APIs"
 
 **Step 1: Write failing tests**
 
-Required cases:
+Use executable jsdom tests. At minimum include:
 
 ```js
-it('checks /api/timeshift/info before normal playback');
-it('uses Hls playback when timeshift is enabled and recording');
-it('falls back to normal mpegts playback when timeshift is disabled');
-it('shows timeshift controls only during timeshift playback');
-it('cleans up timeshift intervals and UI on stop');
-it('seekToLive seeks near the finite live edge');
-it('seekTimeshiftRelative clamps seek range');
+// @vitest-environment jsdom
+import { describe, expect, it, vi } from 'vitest';
+
+describe('timeshift player behavior', () => {
+  it('falls back to normal mpegts playback when timeshift is disabled', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ enabled: false }) });
+    global.mpegts = { isSupported: () => true, createPlayer: vi.fn(() => fakeMpegtsPlayer()) };
+    const { playChannel } = await import('../../public/js/modules/player.js');
+    await playChannel('http://provider/live.ts', 'Channel 1', 'c1');
+    expect(fetch).toHaveBeenCalledWith('/api/timeshift/info/c1');
+    expect(global.mpegts.createPlayer).toHaveBeenCalled();
+  });
+});
 ```
+
+Additional required assertions:
+
+- uses Hls playback when timeshift is enabled and recording
+- shows timeshift controls only during timeshift playback
+- cleans up timeshift intervals and UI on stop
+- `seekToLive()` seeks near the finite live edge
+- `seekTimeshiftRelative()` clamps seek range
 
 **Step 2: Run test to verify it fails**
 
@@ -1149,16 +1331,30 @@ git commit -m "feat: play timeshift channels with hls"
 
 **Step 1: Write failing tests**
 
-Required cases:
+Use executable jsdom tests. At minimum include:
 
 ```js
-it('loads configured timeshift channels and status');
-it('populates channel selector from guideState channels');
-it('creates a timeshift channel via POST');
-it('updates an existing timeshift channel via PUT');
-it('removes a timeshift channel via DELETE after confirmation');
-it('escapes channel names rendered into HTML');
+// @vitest-environment jsdom
+import { describe, expect, it, vi } from 'vitest';
+
+describe('timeshift settings UI', () => {
+  it('escapes channel names rendered into HTML', async () => {
+    document.body.innerHTML = '<div id="timeshift-channels-list"></div>';
+    const { renderTimeshiftChannels } = await import('../../public/js/modules/settings.js');
+    renderTimeshiftChannels([{ channel_id: 'c1', channel_name: '<img src=x onerror=alert(1)>', max_duration_hours: 3, is_enabled: 1 }], []);
+    expect(document.body.innerHTML).not.toContain('onerror=');
+    expect(document.body.textContent).toContain('<img src=x');
+  });
+});
 ```
+
+Additional required assertions:
+
+- loads configured timeshift channels and status
+- populates channel selector from `guideState.channels`
+- creates a timeshift channel via POST
+- updates an existing timeshift channel via PUT
+- removes a timeshift channel via DELETE after confirmation
 
 **Step 2: Run test to verify it fails**
 
@@ -1197,18 +1393,32 @@ git commit -m "feat: manage timeshift channels in settings"
 ### S-509: Start timeshift engine safely on server startup
 
 **Files:**
+- Create: `lib/timeshiftStartup.js`
 - Modify: `server.js`
 - Test: `tests/unit/timeshift-startup.test.js`
 
 **Step 1: Write failing test**
 
-Test startup wiring:
+Use executable tests against an extracted startup helper `lib/timeshiftStartup.js`:
 
 ```js
-it('initializes enabled timeshift recordings after server starts');
-it('schedules cleanup using configured interval');
-it('shuts down timeshift processes on SIGINT and SIGTERM');
+const { describe, expect, it, vi } = require('vitest');
+const { startTimeshiftServices } = require('../../lib/timeshiftStartup');
+
+describe('timeshift startup wiring', () => {
+  it('initializes enabled timeshift recordings and schedules cleanup', () => {
+    const engine = { initialize: vi.fn(), runCleanup: vi.fn(), shutdown: vi.fn() };
+    const schedule = { scheduleJob: vi.fn() };
+    startTimeshiftServices({ engine, schedule, cleanupIntervalMinutes: 5, processLike: fakeProcess() });
+    expect(engine.initialize).toHaveBeenCalled();
+    expect(schedule.scheduleJob).toHaveBeenCalledWith('*/5 * * * *', engine.runCleanup);
+  });
+});
 ```
+
+Additional required assertion:
+
+- SIGINT and SIGTERM handlers call `engine.shutdown()`
 
 **Step 2: Run test to verify it fails**
 
@@ -1220,7 +1430,7 @@ Expected: FAIL.
 
 **Step 3: Implement startup wiring**
 
-Wire engine initialization inside `app.listen()` callback after existing janitors. Register SIGINT/SIGTERM handlers once.
+Implement `startTimeshiftServices({ engine, schedule, cleanupIntervalMinutes, processLike })` in `lib/timeshiftStartup.js`. Wire it inside `app.listen()` callback after existing janitors. Register SIGINT/SIGTERM handlers once.
 
 **Step 4: Verify**
 
@@ -1235,7 +1445,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add server.js tests/unit/timeshift-startup.test.js
+git add lib/timeshiftStartup.js server.js tests/unit/timeshift-startup.test.js
 git commit -m "feat: initialize timeshift engine on startup"
 ```
 
