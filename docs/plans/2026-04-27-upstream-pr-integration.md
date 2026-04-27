@@ -4,9 +4,9 @@
 
 **Goal:** Safely evaluate, correct, and integrate upstream PRs #116, #114, #119, and #109 into this fork using strict TDD.
 
-**Architecture:** Add a Vitest-based automated test harness first, then integrate each upstream PR in low-risk order. Extract small helper modules only where needed to make behavior testable without changing runtime behavior.
+**Architecture:** Add a Vitest-based automated test harness first, validate the PR dependency/order assumptions with automated diff/merge checks, then integrate each upstream PR in low-risk order. Use concrete helper modules for testability: CommonJS helpers under `lib/` for backend/runtime logic and browser ES modules under `public/js/modules/` for frontend helpers.
 
-**Tech Stack:** Node.js, Express, SQLite, vanilla browser ES modules, Vitest, Supertest, jsdom, Nock, FFmpeg process mocks.
+**Tech Stack:** Node.js, Express, SQLite, vanilla browser ES modules, CommonJS backend helpers, Vitest, Supertest, jsdom, Nock, FFmpeg process mocks.
 
 ---
 
@@ -61,7 +61,7 @@ Expected final result: all commands pass and `git status --short` is clean after
 Create `tests/setup/smoke.test.js`:
 
 ```js
-import { describe, expect, it } from 'vitest';
+const { describe, expect, it } = require('vitest');
 
 describe('test harness', () => {
   it('runs a baseline test', () => {
@@ -140,51 +140,7 @@ git add package.json package-lock.json vitest.config.js tests/setup/smoke.test.j
 git commit -m "test: add automated test harness"
 ```
 
-### S-102: Add syntax and diff checks to baseline
-
-**Files:**
-- Modify: `package.json`
-- Test: `tests/setup/smoke.test.js`
-
-**Step 1: Write the failing check expectation**
-
-Run:
-
-```bash
-npm run check:syntax
-npm run check:diff
-```
-
-Expected before script additions: FAIL if scripts are missing, otherwise PASS.
-
-**Step 2: Implement scripts if not already present**
-
-Ensure `package.json` contains:
-
-```json
-"check:syntax": "node --check server.js && find public/js -name '*.js' -print0 | xargs -0 -n1 node --check",
-"check:diff": "git diff --check"
-```
-
-**Step 3: Verify**
-
-Run:
-
-```bash
-npm run check:syntax
-npm run check:diff
-```
-
-Expected: PASS.
-
-**Step 4: Commit**
-
-```bash
-git add package.json
-git commit -m "test: add syntax and diff checks"
-```
-
-### S-103: Extract runtime path resolution for local dev support
+### S-102: Extract runtime path resolution for local dev support
 
 **Files:**
 - Create: `lib/paths.js`
@@ -275,6 +231,90 @@ git add lib/paths.js tests/unit/paths.test.js
 git commit -m "test: cover runtime path resolution"
 ```
 
+### S-103: Validate upstream PR dependency and merge order assumptions
+
+**Files:**
+- Create: `tests/integration/pr-order.test.js`
+- Create: `scripts/check-pr-order.js`
+- Modify: `package.json`
+
+**Step 1: Write the failing test**
+
+Create `tests/integration/pr-order.test.js` that executes `node scripts/check-pr-order.js` and asserts it exits successfully. The script must validate the chosen order `116 -> 114 -> 119 -> 109` by checking that each fetched `upstream/pr/<number>` ref exists and that a temporary detached worktree can merge them sequentially without conflicts.
+
+Test case:
+
+```js
+const { describe, expect, it } = require('vitest');
+const { spawnSync } = require('child_process');
+
+describe('upstream PR integration order', () => {
+  it('can merge PRs 116, 114, 119, 109 sequentially without conflicts', () => {
+    const result = spawnSync(process.execPath, ['scripts/check-pr-order.js'], { encoding: 'utf8' });
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+  });
+});
+```
+
+**Step 2: Run test to verify it fails**
+
+```bash
+npm test tests/integration/pr-order.test.js
+```
+
+Expected: FAIL because `scripts/check-pr-order.js` does not exist.
+
+**Step 3: Implement order check script**
+
+Create `scripts/check-pr-order.js`:
+
+```js
+const { execFileSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const order = ['116', '114', '119', '109'];
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'viniplay-pr-order-'));
+
+try {
+  for (const pr of order) {
+    execFileSync('git', ['rev-parse', '--verify', `upstream/pr/${pr}`], { stdio: 'pipe' });
+  }
+  execFileSync('git', ['worktree', 'add', '--detach', tmp, 'HEAD'], { stdio: 'pipe' });
+  for (const pr of order) {
+    execFileSync('git', ['-C', tmp, 'merge', '--no-commit', '--no-ff', `upstream/pr/${pr}`], { stdio: 'pipe' });
+    execFileSync('git', ['-C', tmp, 'commit', '--no-edit'], { stdio: 'pipe' });
+  }
+} finally {
+  try { execFileSync('git', ['worktree', 'remove', '-f', tmp], { stdio: 'pipe' }); } catch {}
+}
+```
+
+Add script:
+
+```json
+"check:pr-order": "node scripts/check-pr-order.js"
+```
+
+**Step 4: Verify**
+
+```bash
+npm test tests/integration/pr-order.test.js
+npm run check:pr-order
+npm run check:syntax
+npm run check:diff
+```
+
+Expected: PASS.
+
+**Step 5: Commit**
+
+```bash
+git add package.json scripts/check-pr-order.js tests/integration/pr-order.test.js
+git commit -m "test: validate upstream pr merge order"
+```
+
 ---
 
 ## Milestone 2: PR #116 Mobile Navigation UI
@@ -282,20 +322,24 @@ git commit -m "test: cover runtime path resolution"
 ### S-201: Capture mobile menu close transition behavior
 
 **Files:**
+- Create: `public/js/modules/mobileNav.js`
 - Test: `tests/frontend/mobile-nav.test.js`
 - Modify: `public/index.html`
 - Modify: `public/js/modules/ui.js`
 
 **Step 1: Write the failing test**
 
-Create `tests/frontend/mobile-nav.test.js` around exported `openMobileMenu` and `closeMobileMenu`. Use jsdom fixtures containing `#mobile-nav-menu` and `#mobile-menu-overlay`. Mock `UIElements` if direct module import is difficult; otherwise extract class mutation helpers into `public/js/modules/mobileNav.js` and test them directly.
+Create `tests/frontend/mobile-nav.test.js` against the concrete helper module `public/js/modules/mobileNav.js`. Use jsdom fixtures containing `#mobile-nav-menu` and `#mobile-menu-overlay`.
 
 Test cases:
 
 ```js
-it('openMobileMenu shows menu and overlay');
-it('closeMobileMenu waits for transform transition before hiding menu');
-it('closeMobileMenu ignores non-transform transitionend events');
+import { describe, expect, it } from 'vitest';
+import { openMobileMenuElements, closeMobileMenuElements } from '../../public/js/modules/mobileNav.js';
+
+it('openMobileMenuElements shows menu and overlay');
+it('closeMobileMenuElements waits for transform transition before hiding menu');
+it('closeMobileMenuElements ignores non-transform transitionend events');
 ```
 
 **Step 2: Run test to verify it fails**
@@ -304,14 +348,40 @@ it('closeMobileMenu ignores non-transform transitionend events');
 npm test tests/frontend/mobile-nav.test.js
 ```
 
-Expected: FAIL because current behavior hides on any transition and `index.html` lacks persistent `flex` class.
+Expected: FAIL because `public/js/modules/mobileNav.js` does not exist.
 
-**Step 3: Apply PR #116 behavior**
+**Step 3: Implement helper and apply PR #116 behavior**
 
-Bring in the PR #116 changes:
+Create `public/js/modules/mobileNav.js`:
+
+```js
+export function openMobileMenuElements({ menu, overlay, body = document.body }) {
+  menu?.classList.remove('hidden', '-translate-x-full');
+  menu?.classList.add('translate-x-0');
+  overlay?.classList.remove('hidden');
+  body?.classList.add('overflow-hidden');
+}
+
+export function closeMobileMenuElements({ menu, overlay, body = document.body }) {
+  if (menu) {
+    menu.classList.add('-translate-x-full');
+    menu.classList.remove('translate-x-0');
+    menu.addEventListener('transitionend', function handler(e) {
+      if (e.propertyName === 'transform' && e.target === menu) {
+        menu.classList.add('hidden');
+        menu.removeEventListener('transitionend', handler);
+      }
+    });
+  }
+  overlay?.classList.add('hidden');
+  body?.classList.remove('overflow-hidden');
+}
+```
+
+Then:
 
 - In `public/index.html`, change the mobile nav container class from `hidden ... flex-col ...` to `hidden ... flex flex-col ...`.
-- In `public/js/modules/ui.js`, update `closeMobileMenu()` so the `transitionend` handler hides the menu only when `e.propertyName === 'transform'` and `e.target === UIElements.mobileNavMenu`.
+- In `public/js/modules/ui.js`, import and call these helpers from `openMobileMenu()` and `closeMobileMenu()`.
 
 **Step 4: Verify**
 
@@ -326,7 +396,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add public/index.html public/js/modules/ui.js tests/frontend/mobile-nav.test.js
+git add public/index.html public/js/modules/ui.js public/js/modules/mobileNav.js tests/frontend/mobile-nav.test.js
 git commit -m "fix: stabilize mobile navigation transition handling"
 ```
 
@@ -340,20 +410,26 @@ git commit -m "fix: stabilize mobile navigation transition handling"
 - Modify: `server.js`
 - Modify: `Dockerfile`
 - Modify/Create: `.gitignore`
-- Test: `tests/unit/paths.test.js`
+- Test: `tests/integration/server-paths.test.js`
 
 **Step 1: Write failing integration-oriented test**
 
-Extend `tests/unit/paths.test.js` to assert Docker defaults and local overrides as in S-103. If S-103 already covers this, run it first before modifying `server.js`.
+Create `tests/integration/server-paths.test.js` that starts `server.js` in a child process with temporary `DATA_DIR`, `DVR_DIR`, and `SESSION_SECRET` values. The test must assert that startup logs include the temporary data directory and that the process creates both temp directories instead of `/data` and `/dvr`.
 
-**Step 2: Run test and baseline syntax**
+Test cases:
 
-```bash
-npm test tests/unit/paths.test.js
-npm run check:syntax
+```js
+it('server startup honors DATA_DIR and DVR_DIR environment overrides');
+it('Dockerfile declares DATA_DIR=/data and DVR_DIR=/dvr defaults');
 ```
 
-Expected: tests PASS, syntax PASS before server integration.
+**Step 2: Run test to verify it fails**
+
+```bash
+npm test tests/integration/server-paths.test.js
+```
+
+Expected: FAIL because `server.js` still hard-codes `/data` and `/dvr`.
 
 **Step 3: Integrate into `server.js`**
 
@@ -387,7 +463,7 @@ ENV DATA_DIR=/data
 ENV DVR_DIR=/dvr
 ```
 
-Add `.gitignore` entries from PR #114, plus local planning artifacts:
+Add `.gitignore` entries from PR #114 for local development artifacts:
 
 ```gitignore
 node_modules/
@@ -396,14 +472,14 @@ node_modules/
 *.log
 data/
 dvr/
-ai_plan/
 ```
 
 **Step 4: Verify**
 
 ```bash
-npm test tests/unit/paths.test.js
-DATA_DIR=/tmp/viniplay-test-data DVR_DIR=/tmp/viniplay-test-dvr node --check server.js
+npm test tests/integration/server-paths.test.js tests/unit/paths.test.js
+node --check server.js
+Dockerfile_has_envs=$(grep -c '^ENV DATA_DIR=/data\|^ENV DVR_DIR=/dvr' Dockerfile); test "$Dockerfile_has_envs" -eq 2
 npm run check:diff
 ```
 
@@ -412,7 +488,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add server.js Dockerfile .gitignore lib/paths.js tests/unit/paths.test.js
+git add server.js Dockerfile .gitignore lib/paths.js tests/unit/paths.test.js tests/integration/server-paths.test.js
 git commit -m "fix: support local runtime data directories"
 ```
 
@@ -501,7 +577,7 @@ git commit -m "fix: harden image proxy fetching and caching"
 
 **Step 1: Write failing tests**
 
-Extract a small frontend helper if needed:
+Create the concrete frontend helper `public/js/modules/imageProxyUrl.js`:
 
 Create `public/js/modules/imageProxyUrl.js`:
 
@@ -738,7 +814,8 @@ git commit -m "fix: load hls.js for timeshift playback"
 ### S-502: Cover timeshift default settings migration
 
 **Files:**
-- Modify: `server.js` or extract `lib/settingsDefaults.js`
+- Create: `lib/settingsDefaults.js`
+- Modify: `server.js`
 - Test: `tests/unit/timeshift-settings.test.js`
 
 **Step 1: Write failing tests**
@@ -765,7 +842,7 @@ Expected: FAIL because main branch has no timeshift settings.
 
 **Step 3: Implement minimal settings migration**
 
-Extract settings default/migration logic if needed. Add `timeshift` defaults from PR #109 while preserving existing settings.
+Create `lib/settingsDefaults.js` with exported `DEFAULT_SETTINGS` and `mergeSettingsWithDefaults(existingSettings)`. Move the current default settings object and migration logic used by `getSettings()` into this module, then add `timeshift` defaults from PR #109 while preserving existing settings.
 
 **Step 4: Verify**
 
@@ -786,7 +863,8 @@ git commit -m "feat: add timeshift settings defaults"
 ### S-503: Add timeshift schema migration tests
 
 **Files:**
-- Modify: `server.js` or extract `lib/schema.js`
+- Create: `lib/schema.js`
+- Modify: `server.js`
 - Test: `tests/unit/timeshift-schema.test.js`
 
 **Step 1: Write failing test**
@@ -810,7 +888,7 @@ Expected: FAIL.
 
 **Step 3: Implement schema migration**
 
-Add table creation inside DB setup or extracted schema module.
+Create `lib/schema.js` with exported `initializeSchema(db)` and move DB table creation into this module. Add the `timeshift_channels` table creation there, then call `initializeSchema(db)` from `server.js`.
 
 **Step 4: Verify**
 
@@ -942,12 +1020,13 @@ git commit -m "feat: manage timeshift segment cleanup and playlists"
 ### S-506: Add admin-only timeshift configuration APIs
 
 **Files:**
+- Create: `lib/timeshiftRoutes.js`
 - Modify: `server.js`
 - Test: `tests/integration/timeshift-api.test.js`
 
 **Step 1: Write failing API tests**
 
-Use a small app factory if needed to avoid starting the real server. Required cases:
+Create `lib/timeshiftRoutes.js` with `registerTimeshiftRoutes(app, deps)` and test it with a small Express app factory instead of starting the real server. Required cases:
 
 ```js
 it('requires admin for GET /api/timeshift/channels');
@@ -970,7 +1049,7 @@ Expected: FAIL.
 
 **Step 3: Implement routes**
 
-Bring in PR #109 API routes, adapted to the tested engine module:
+Implement `registerTimeshiftRoutes(app, deps)` in `lib/timeshiftRoutes.js`, call it from `server.js`, and bring in PR #109 API routes adapted to the tested engine module:
 
 - `GET /api/timeshift/channels`
 - `POST /api/timeshift/channels`
@@ -1001,7 +1080,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add server.js tests/integration/timeshift-api.test.js
+git add lib/timeshiftRoutes.js server.js tests/integration/timeshift-api.test.js
 git commit -m "feat: add timeshift management APIs"
 ```
 
@@ -1209,42 +1288,60 @@ git add docs/plans/2026-04-27-upstream-pr-assessment.md
 git commit -m "docs: document upstream pr integration assessment"
 ```
 
-### S-602: Run full verification
+### S-602: Run full automated and smoke verification
 
 **Files:**
-- No code changes expected
+- Create: `scripts/smoke-local-start.js`
+- Create: `tests/integration/final-smoke.test.js`
 
-**Step 1: Run automated suite**
+**Step 1: Write failing smoke automation**
+
+Create `tests/integration/final-smoke.test.js` that executes `node scripts/smoke-local-start.js`. The smoke script must start the server with temp `DATA_DIR`, `DVR_DIR`, and `SESSION_SECRET`, wait for the listening log line, request `/api/auth/needs-setup`, assert a 200 JSON response, assert temp data/dvr directories exist, then terminate the process.
+
+**Step 2: Run smoke test to verify it fails**
+
+```bash
+npm test tests/integration/final-smoke.test.js
+```
+
+Expected: FAIL because `scripts/smoke-local-start.js` does not exist.
+
+**Step 3: Implement smoke automation**
+
+Create `scripts/smoke-local-start.js` using only Node built-ins: `child_process.spawn`, `fs.mkdtempSync`, `http.get`, and process cleanup handlers. The script must exit non-zero on timeout, startup crash, missing directories, or non-200 `/api/auth/needs-setup` response.
+
+**Step 4: Run automated suite**
 
 ```bash
 npm test
 npm run check:syntax
+npm run check:pr-order
 npm run check:diff
 ```
 
 Expected: PASS.
 
-**Step 2: Run local startup smoke check**
+**Step 5: Run explicit local startup smoke check**
 
 ```bash
-DATA_DIR=/tmp/viniplay-smoke-data DVR_DIR=/tmp/viniplay-smoke-dvr SESSION_SECRET=test-secret timeout 10s npm start
+node scripts/smoke-local-start.js
 ```
 
-Expected: server starts, creates local data directories, and exits due timeout without startup crash.
+Expected: PASS with server startup, temp local data directories, and `/api/auth/needs-setup` response verified.
 
-**Step 3: Manual smoke checklist**
+**Step 6: Remaining manual smoke checklist**
 
-- [ ] First-time setup page loads.
-- [ ] Settings page loads with local data dirs.
+These checks require real browser/device interaction after automated verification:
+
+- [ ] First-time setup page renders in a browser.
+- [ ] Settings page renders with local data dirs.
 - [ ] Mobile nav opens and closes on mobile viewport.
 - [ ] External channel logo renders through `/api/image-proxy`.
-- [ ] Cast URL helper behavior matches active stream/cast profile settings.
-- [ ] Admin can enable timeshift for a channel.
-- [ ] Non-admin cannot manage timeshift config.
-- [ ] Timeshift playlist endpoint requires auth.
-- [ ] Timeshift playback uses HLS controls when available and normal playback otherwise.
+- [ ] Chromecast device accepts the generated Cast media URL.
+- [ ] Admin can enable timeshift for a real playable channel.
+- [ ] Timeshift playback uses HLS controls with a real stream and normal playback otherwise.
 
-**Step 4: Final commit if needed**
+**Step 7: Final commit if needed**
 
 Only commit if verification fixes were required.
 
