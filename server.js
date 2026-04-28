@@ -35,6 +35,7 @@ const { createTimeshiftEngine } = require('./lib/timeshiftEngine');
 const { registerTimeshiftRoutes } = require('./lib/timeshiftRoutes');
 const { startTimeshiftServices } = require('./lib/timeshiftStartup');
 const { shouldProcessVodForSource } = require('./lib/sourceVodPolicy');
+const { configureSqliteDatabase } = require('./lib/sqliteConfig');
 
 
 // --- NEW: Live Activity Tracking for Redirects ---
@@ -138,6 +139,7 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
         console.error("[DB] Error opening database:", err.message);
         process.exit(1);
     } else {
+        configureSqliteDatabase(db);
         console.log("[DB] Connected to the SQLite database.");
         initializeSchema(db).catch(err => console.error('[DB] Error initializing extracted schema:', err.message));
         db.serialize(() => {
@@ -397,7 +399,7 @@ if (sessionSecret.includes('replace_this')) {
 
 app.use(
     session({
-        store: new SQLiteStore({ db: 'viniplay.db', dir: DATA_DIR, table: 'sessions' }),
+        store: new SQLiteStore({ db: 'viniplay.db', dir: DATA_DIR, table: 'sessions', concurrentDb: true }),
         secret: sessionSecret,
         resave: false,
         saveUninitialized: false,
