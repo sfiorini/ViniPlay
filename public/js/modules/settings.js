@@ -21,6 +21,43 @@ let tempSelectedGroups = new Set();
 let currentGroupEditorContext = null; // 'source-editor' or 'user-editor'
 let currentGroupSourceId = null;
 
+function safeDisplayText(value) {
+    return String(value ?? '').replace(/\son\w+\s*=\s*/gi, ' ');
+}
+
+export function renderTimeshiftChannels(channels = [], status = []) {
+    const container = document.getElementById('timeshift-channels-list');
+    if (!container) return;
+
+    container.innerHTML = '';
+    if (!channels.length) {
+        const empty = document.createElement('p');
+        empty.className = 'text-sm text-gray-400';
+        empty.textContent = 'No timeshift channels configured.';
+        container.appendChild(empty);
+        return;
+    }
+
+    const activeIds = new Set(status.map(item => item.channelId));
+    channels.forEach(channel => {
+        const row = document.createElement('div');
+        row.className = 'flex items-center justify-between gap-3 rounded-md bg-gray-700 p-3';
+        row.dataset.channelId = channel.channel_id;
+
+        const details = document.createElement('div');
+        const name = document.createElement('div');
+        name.className = 'font-medium text-white';
+        name.textContent = safeDisplayText(channel.channel_name);
+        const meta = document.createElement('div');
+        meta.className = 'text-xs text-gray-300';
+        meta.textContent = `${channel.max_duration_hours || 3}h buffer • ${channel.is_enabled ? 'Enabled' : 'Disabled'}${activeIds.has(channel.channel_id) ? ' • Recording' : ''}`;
+        details.append(name, meta);
+
+        row.appendChild(details);
+        container.appendChild(row);
+    });
+}
+
 
 /**
  * Fetches the server's public IP and displays it.
