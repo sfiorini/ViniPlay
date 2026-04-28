@@ -2,7 +2,7 @@
 #
 # It pushes to two different container registries:
 # 1. GitHub Container Registry (ghcr.io)
-# 2. Docker Hub (docker.io)
+# 2. Docker Hub (docker.io/<DOCKERHUB_USERNAME>/viniplay)
 #
 # TRIGGERS:
 # 1. On a push to the 'main' branch (automatic).
@@ -34,6 +34,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set image names
+        run: |
+          echo "GHCR_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -53,7 +57,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ghcr.io/${{ github.repository }}
+            ${{ env.GHCR_IMAGE }}
             ${{ secrets.DOCKERHUB_USERNAME }}/viniplay
           tags: |
             # Tag with branch name on push or manual run.
