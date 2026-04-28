@@ -1,3 +1,5 @@
+const fs = require('fs');
+
 describe('server runtime configuration', () => {
   it('resolves DATA_DIR, DVR_DIR, and PORT from environment overrides', () => {
     const { resolveServerConfig } = require('../../lib/serverConfig');
@@ -12,5 +14,11 @@ describe('server runtime configuration', () => {
     const config = resolveServerConfig({}, '/app');
     expect(config.port).toBe(8998);
     expect(config.paths.DATA_DIR).toBe('/data');
+  });
+
+  it('Dockerfile declares DATA_DIR=/data and DVR_DIR=/dvr defaults', () => {
+    const dockerfile = fs.readFileSync('Dockerfile', 'utf8');
+    expect(dockerfile).toMatch(/^ENV DATA_DIR=\/data$/m);
+    expect(dockerfile).toMatch(/^ENV DVR_DIR=\/dvr$/m);
   });
 });

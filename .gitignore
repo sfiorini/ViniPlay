@@ -1,2 +1,7 @@
 ai_plan/
 node_modules/
+.env
+.env.local
+*.log
+data/
+dvr/

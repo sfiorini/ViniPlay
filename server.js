@@ -26,13 +26,14 @@ const si = require('systeminformation'); // NEW: For system health monitoring
 //vod processor
 const { refreshVodContent, processM3uVod } = require('./vodProcessor');
 const XtreamClient = require('./xtreamClient');
+const { resolveServerConfig } = require('./lib/serverConfig');
 
 
 // --- NEW: Live Activity Tracking for Redirects ---
 const activeRedirectStreams = new Map(); // Tracks live redirect streams for the admin UI
 
 const app = express();
-const port = 8998;
+const { port, paths: runtimePaths } = resolveServerConfig(process.env, __dirname);
 const saltRounds = 10;
 // Initialize global variables at the top-level scope
 let notificationCheckInterval = null;
@@ -60,20 +61,22 @@ const activeStreamProcesses = new Map();
 const STREAM_INACTIVITY_TIMEOUT = 30000; // 30 seconds to kill an inactive stream process
 
 // --- Configuration ---
-const DATA_DIR = '/data';
-const DVR_DIR = '/dvr';
-const LOGS_DIR = path.join(DATA_DIR, 'logs'); // NEW: Log management directory
-const VAPID_KEYS_PATH = path.join(DATA_DIR, 'vapid.json');
-const SOURCES_DIR = path.join(DATA_DIR, 'sources');
-const RAW_CACHE_DIR = path.join(SOURCES_DIR, 'raw_cache');
-const IMAGE_CACHE_DIR = path.join(DATA_DIR, 'image_cache'); // NEW: VOD poster image cache
-const PUBLIC_DIR = path.join(__dirname, 'public');
-const DB_PATH = path.join(DATA_DIR, 'viniplay.db');
-const LIVE_CHANNELS_M3U_PATH = path.join(DATA_DIR, 'live_channels.m3u'); // Renamed
-const LIVE_EPG_JSON_PATH = path.join(DATA_DIR, 'epg.json'); // Renamed
-const VOD_MOVIES_JSON_PATH = path.join(DATA_DIR, 'vod_movies.json'); // New
-const VOD_SERIES_JSON_PATH = path.join(DATA_DIR, 'vod_series.json'); // New
-const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
+const {
+    DATA_DIR,
+    DVR_DIR,
+    LOGS_DIR,
+    VAPID_KEYS_PATH,
+    SOURCES_DIR,
+    RAW_CACHE_DIR,
+    IMAGE_CACHE_DIR,
+    PUBLIC_DIR,
+    DB_PATH,
+    LIVE_CHANNELS_M3U_PATH,
+    LIVE_EPG_JSON_PATH,
+    VOD_MOVIES_JSON_PATH,
+    VOD_SERIES_JSON_PATH,
+    SETTINGS_PATH
+} = runtimePaths;
 
 console.log(`[INIT] Application starting. Data directory: ${DATA_DIR}, Public directory: ${PUBLIC_DIR}`);
 
