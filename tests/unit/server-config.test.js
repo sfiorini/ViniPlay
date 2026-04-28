@@ -13,7 +13,7 @@ describe('server runtime configuration', () => {
     const { resolveServerConfig } = require('../../lib/serverConfig');
     const config = resolveServerConfig({}, '/app');
     expect(config.port).toBe(8998);
-    expect(config.paths.DATA_DIR).toBe('/data');
+    expect(config.paths.DATA_DIR).toBe('/app/data');
   });
 
   it('Dockerfile declares DATA_DIR=/data and DVR_DIR=/dvr defaults', () => {

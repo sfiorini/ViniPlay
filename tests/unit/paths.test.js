@@ -5,9 +5,16 @@ function loadSubject() {
 }
 
 describe('resolveRuntimePaths', () => {
-  it('uses Docker defaults when no overrides are set', () => {
+  it('uses project-local defaults when no overrides are set', () => {
     const { resolveRuntimePaths } = loadSubject();
     const paths = resolveRuntimePaths({}, '/app');
+    expect(paths.DATA_DIR).toBe(path.join('/app', 'data'));
+    expect(paths.DVR_DIR).toBe(path.join('/app', 'dvr'));
+  });
+
+  it('uses Docker defaults when Docker env vars are set', () => {
+    const { resolveRuntimePaths } = loadSubject();
+    const paths = resolveRuntimePaths({ DATA_DIR: '/data', DVR_DIR: '/dvr' }, '/app');
     expect(paths.DATA_DIR).toBe('/data');
     expect(paths.DVR_DIR).toBe('/dvr');
   });
