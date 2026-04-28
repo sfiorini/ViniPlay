@@ -88,6 +88,13 @@ const TIMESHIFT_DIR = path.join(DATA_DIR, 'timeshift');
 
 console.log(`[INIT] Application starting. Data directory: ${DATA_DIR}, Public directory: ${PUBLIC_DIR}`);
 
+try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+} catch (mkdirError) {
+    console.error(`[INIT] FATAL: Failed to create data directory before startup secrets: ${mkdirError.message}`);
+    process.exit(1);
+}
+
 // --- Automatic VAPID Key Generation ---
 let vapidKeys = {};
 try {
@@ -5004,7 +5011,7 @@ app.get('*', (req, res) => {
 // --- Server Start ---
 // NEW: Run hardware detection before starting the server
 detectHardwareAcceleration().then(() => {
-    app.listen(port, () => {
+    app.listen(port, async () => {
         console.log(`\n======================================================`);
         console.log(` VINI PLAY server listening at http://localhost:${port}`);
         console.log(`======================================================\n`);
@@ -5025,13 +5032,18 @@ detectHardwareAcceleration().then(() => {
         schedule.scheduleJob('0 2 * * *', autoDeleteOldRecordings);
         console.log('[DVR_STORAGE] Scheduled daily cleanup of old recordings.');
 
-        startTimeshiftServices({
-            engine: timeshiftEngine,
-            schedule,
-            cleanupIntervalMinutes: getSettings().timeshift?.cleanupIntervalMinutes || 5,
-            processLike: process
-        });
-        console.log('[TIMESHIFT] Timeshift engine initialized.');
+        try {
+            await initializeSchema(db);
+            startTimeshiftServices({
+                engine: timeshiftEngine,
+                schedule,
+                cleanupIntervalMinutes: getSettings().timeshift?.cleanupIntervalMinutes || 5,
+                processLike: process
+            });
+            console.log('[TIMESHIFT] Timeshift engine initialized.');
+        } catch (error) {
+            console.error('[TIMESHIFT] Failed to initialize timeshift services:', error);
+        }
 
     });
 });

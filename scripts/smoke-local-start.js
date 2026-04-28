@@ -9,8 +9,6 @@ const root = process.cwd();
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'viniplay-smoke-'));
 const dataDir = path.join(tmpRoot, 'data');
 const dvrDir = path.join(tmpRoot, 'dvr');
-fs.mkdirSync(dataDir, { recursive: true });
-fs.mkdirSync(dvrDir, { recursive: true });
 
 let child;
 let done = false;
@@ -59,6 +57,7 @@ function requestNeedsSetup(port) {
         return finish(1, `Invalid JSON from needs-setup: ${body}`);
       }
       if (!fs.existsSync(dataDir) || !fs.existsSync(dvrDir)) return finish(1, 'Temp data/dvr directories were not created');
+      if (/FATAL|Initialization failed|SQLITE_ERROR/.test(logs)) return finish(1, `Startup logs contain errors:\n${logs}`);
       finish(0, 'Local startup smoke passed.');
     });
   }).on('error', error => finish(1, `HTTP smoke request failed: ${error.message}\n${logs}`));
