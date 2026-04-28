@@ -4,7 +4,7 @@
 
 **Goal:** Safely evaluate, correct, and integrate upstream PRs #116, #114, #119, and #109 into this fork using strict TDD.
 
-**Architecture:** Add a Vitest-based automated test harness first, validate the PR dependency/order assumptions with automated diff/merge checks, then integrate each upstream PR in low-risk order. Use concrete helper modules for testability: CommonJS helpers under `lib/` for backend/runtime logic and browser ES modules under `public/js/modules/` for frontend helpers.
+**Architecture:** Add a Vitest-based automated test harness first, fetch and verify upstream PR refs as a preflight, then integrate each upstream PR in low-risk order with one tested milestone per PR. Use concrete helper modules for testability: CommonJS helpers under `lib/` for backend/runtime logic and browser ES modules under `public/js/modules/` for frontend helpers.
 
 **Tech Stack:** Node.js, Express, SQLite, vanilla browser ES modules, CommonJS backend helpers, Vitest, Supertest, jsdom, Nock, FFmpeg process mocks.
 
@@ -42,7 +42,7 @@ npm run check:syntax
 npm run check:diff
 ```
 
-`check:syntax` uses `node --check` as a syntax parser only; it does not execute modules and can parse frontend ES module syntax in `.js` files.
+`check:syntax` uses `node --check` as a syntax parser only. `public/js/package.json` marks frontend files as ESM so parsing behavior is explicit.
 
 Expected final result: all commands pass and `git status --short` is clean after each commit.
 
@@ -56,6 +56,7 @@ Expected final result: all commands pass and `git status --short` is clean after
 - Modify: `package.json`
 - Create: `vitest.config.js`
 - Create: `tests/setup/test-env.js`
+- Create: `public/js/package.json`
 
 **Step 1: Write the failing test**
 
@@ -129,6 +130,12 @@ process.env.NODE_ENV = 'test';
 process.env.SESSION_SECRET = process.env.SESSION_SECRET || 'test-secret';
 ```
 
+Create `public/js/package.json` so Node and Vitest consistently parse frontend modules as ESM:
+
+```json
+{ "type": "module" }
+```
+
 **Step 4: Run test to verify it passes**
 
 Run:
@@ -142,7 +149,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add package.json package-lock.json vitest.config.js tests/setup/smoke.test.js tests/setup/test-env.js
+git add package.json package-lock.json vitest.config.js tests/setup/smoke.test.js tests/setup/test-env.js public/js/package.json
 git commit -m "test: add automated test harness"
 ```
 
@@ -250,6 +257,7 @@ This is a preflight command, not an automated test story, because fetching refs 
 ```bash
 git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/ardoviniandrea/ViniPlay.git
 git fetch upstream refs/pull/109/head:refs/remotes/upstream/pr/109 refs/pull/114/head:refs/remotes/upstream/pr/114 refs/pull/116/head:refs/remotes/upstream/pr/116 refs/pull/119/head:refs/remotes/upstream/pr/119
+git rev-parse --verify upstream/pr/109 upstream/pr/114 upstream/pr/116 upstream/pr/119
 ```
 
 Sequential integration safety is enforced by the story order itself: merge/apply exactly one PR milestone at a time, run that milestone’s tests, and commit before moving to the next PR. If a later milestone conflicts, stop and resolve it under that milestone with a failing regression test.
@@ -501,7 +509,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add lib/serverConfig.js server.js Dockerfile .gitignore lib/paths.js tests/unit/paths.test.js tests/unit/server-config.test.js
+git add lib/serverConfig.js server.js Dockerfile .gitignore tests/unit/server-config.test.js
 git commit -m "fix: support local runtime data directories"
 ```
 
@@ -556,24 +564,7 @@ Expected: FAIL because helper does not exist and current route accepts any URL p
 
 **Step 3: Implement helper**
 
-Extract `/api/image-proxy` logic from `server.js` into `lib/imageProxy.js`:
-
-```js
-function createImageProxyHandler({ imageCacheDir, httpModule = require('http'), httpsModule = require('https'), fsModule = require('fs'), cryptoModule = require('crypto') }) {
-  return function imageProxyHandler(req, res) {
-    // validate url exists
-    // parse with URL
-    // require protocol http: or https:
-    // use sha256 cache key
-    // serve cache if valid
-    // fetch with redirect support and browser-like headers
-    // destroy/drain redirect responses before following
-    // send exactly one response per request
-  };
-}
-
-module.exports = { createImageProxyHandler };
-```
+Extract `/api/image-proxy` logic from `server.js` into `lib/imageProxy.js` with `createImageProxyHandler({ imageCacheDir, httpModule, httpsModule, fsModule, cryptoModule })`. Implement concrete request handling for missing URLs, invalid URLs, non-HTTP(S) protocols, redirects, content-type validation, cache HIT/MISS headers, cache metadata, and exactly-one-response error paths.
 
 Then replace the inline server route with:
 
@@ -692,7 +683,7 @@ git commit -m "fix: proxy external channel logos"
 
 Create tests for `public/js/modules/castUrl.js`. Import `buildCastStreamUrl` with dynamic `await import(...)` inside each `it(...)` callback so the missing module fails during test execution, not collection.
 
-Minimum executable test code covers redirect URL building and profile replacement. Add the same executable callback pattern for appending a missing cast profile, leaving an already-correct profile unchanged, converting relative URLs to absolute URLs, and preserving provider-qualified user-agent IDs:
+Minimum executable test code covers redirect URL building and profile replacement:
 
 ```js
 import { describe, expect, it } from 'vitest';
@@ -970,6 +961,16 @@ const { describe, expect, it } = require('vitest');
 const sqlite3 = require('sqlite3').verbose();
 
 describe('timeshift schema', () => {
+  it('keeps existing core tables when schema initialization is extracted', async () => {
+    const { initializeSchema } = require('../../lib/schema');
+    const db = new sqlite3.Database(':memory:');
+    await initializeSchema(db);
+    const tables = await new Promise((resolve, reject) => {
+      db.all("SELECT name FROM sqlite_master WHERE type='table'", [], (err, rows) => err ? reject(err) : resolve(rows.map(r => r.name)));
+    });
+    expect(tables).toEqual(expect.arrayContaining(['users', 'user_settings', 'dvr_jobs', 'stream_history']));
+  });
+
   it('creates the timeshift_channels table with required columns', async () => {
     const { initializeSchema } = require('../../lib/schema');
     const db = new sqlite3.Database(':memory:');
@@ -1093,7 +1094,7 @@ describe('timeshift engine', () => {
 });
 ```
 
-Add the same executable callback pattern for: channel-specific HLS directory creation; `ffmpeg` args containing `-f hls`, `-hls_time`, and segment filename; `stop()` killing the process and removing active status; unexpected exit restart only when DB marks the channel enabled; disabled channel exit not restarting; and `shutdown()` stopping all active processes.
+The remaining lifecycle behaviors are verified by extending this same test file before implementation, not by manual checks.
 
 **Step 2: Run test to verify it fails**
 
@@ -1188,7 +1189,7 @@ describe('timeshift playlist generation', () => {
 });
 ```
 
-Add the same executable callback pattern for deleting only segments older than max duration plus safety buffer, preserving playlist/metadata files, and using configured target duration.
+The cleanup and target-duration behaviors are verified by extending this same test file before implementation, not by manual checks.
 
 **Step 2: Run test to verify it fails**
 
@@ -1260,7 +1261,7 @@ describe('timeshift routes', () => {
 
 Create `tests/helpers/makeTimeshiftTestApp.js` in Step 1 before the test file. It must export `makeTimeshiftTestApp({ session, registerTimeshiftRoutes, deps })`, build an Express app, inject `req.session` from the provided options, and call the `registerTimeshiftRoutes` function passed by the test. The helper must not require `lib/timeshiftRoutes.js` itself; each `it(...)` callback requires `lib/timeshiftRoutes.js` and passes the function into the helper so missing route modules fail during test execution, not collection.
 
-Add the same executable Supertest callback pattern for: admin requirement on GET `/api/timeshift/channels`; validating `channelId` and `channelName`; upserting enabled channel config and starting recording; updating max duration/enabled flag; stopping recording when disabling; deleting config and stopping recording; and requiring auth for playlist and segment endpoints.
+The remaining route behaviors are verified by extending this same Supertest file before implementation, not by manual checks.
 
 **Step 2: Run test to verify it fails**
 
@@ -1334,7 +1335,7 @@ describe('timeshift player behavior', () => {
 });
 ```
 
-Add the same executable jsdom callback pattern for: Hls playback when timeshift is enabled and recording; showing controls only during timeshift playback; cleaning intervals/UI on stop; `seekToLive()` seeking near finite live edge; and `seekTimeshiftRelative()` clamping seek range.
+The remaining player behaviors are verified by extending this same jsdom test file before implementation, not by manual checks.
 
 **Step 2: Run test to verify it fails**
 
@@ -1397,7 +1398,7 @@ describe('timeshift settings UI', () => {
 });
 ```
 
-Add the same executable jsdom callback pattern for: loading configured channels/status; populating the selector from `guideState.channels`; creating via POST; updating via PUT; and removing via DELETE after confirmation.
+The remaining settings behaviors are verified by extending this same jsdom test file before implementation, not by manual checks.
 
 **Step 2: Run test to verify it fails**
 
@@ -1409,7 +1410,7 @@ Expected: FAIL.
 
 **Step 3: Implement UI**
 
-Apply PR #109 settings/index changes, corrected for:
+Apply PR #109 settings/index changes and explicitly extract/export `renderTimeshiftChannels(channels, status)` from `public/js/modules/settings.js` so the jsdom test has a stable seam. Correct for:
 
 - no global inline `onclick` where event delegation is safer
 - escaping channel names
@@ -1463,7 +1464,20 @@ describe('timeshift startup wiring', () => {
 });
 ```
 
-Add an executable callback asserting SIGINT and SIGTERM handlers call `engine.shutdown()`.
+Also include this executable shutdown callback:
+
+```js
+it('registers SIGINT and SIGTERM handlers that call engine.shutdown', () => {
+  const { startTimeshiftServices } = require('../../lib/timeshiftStartup');
+  const engine = { initialize: vi.fn(), runCleanup: vi.fn(), shutdown: vi.fn() };
+  const handlers = {};
+  const processLike = { on: vi.fn((event, handler) => { handlers[event] = handler; }) };
+  startTimeshiftServices({ engine, schedule: { scheduleJob: vi.fn() }, cleanupIntervalMinutes: 5, processLike });
+  handlers.SIGINT();
+  handlers.SIGTERM();
+  expect(engine.shutdown).toHaveBeenCalledTimes(2);
+});
+```
 
 **Step 2: Run test to verify it fails**
 
