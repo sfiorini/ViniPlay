@@ -16,6 +16,19 @@ Join my <a href="https://discord.gg/DXxvAw22Us">discord</a> to talk with the com
 
 ---
 
+## About This Fork
+
+This fork tracks ViniPlay upstream while carrying a set of integration and deployment improvements that are not necessarily present in the upstream `ardoviniandrea/ViniPlay` repository:
+
+- **Fast container startup and login**: startup source processing skips heavyweight VOD catalog refreshes, and the initial `/api/config` response no longer embeds legacy VOD arrays. VOD is loaded lazily from the VOD library endpoint.
+- **Per-source VOD control**: M3U and Xtream Codes sources have an **Include VOD content** option. Disable it for live-TV-only subscriptions to avoid processing movie/series catalogs for that source.
+- **Timeshift support**: selected live channels can be buffered into local HLS segments for pause/rewind-style playback, with settings, API routes, cleanup, and player integration.
+- **Chromecast and proxy hardening**: Cast URLs/session behavior and external image/logo loading are routed through tested helpers/proxy endpoints for better browser/device compatibility.
+- **Docker/local runtime fixes**: Docker uses `/data` and `/dvr`, while plain local `npm start` uses project-local `./data` and `./dvr` so development does not require root-owned paths.
+- **Regression test harness**: Vitest-based unit, frontend, integration, syntax, diff, and startup smoke checks cover the fork-specific behavior.
+
+---
+
 ViniPlay transforms your M3U and EPG files into a polished, high-performance streaming experience. It's a full-featured IPTV solution that runs in a Docker container, providing a robust Node.js backend to handle streams and a sleek, responsive frontend for an exceptional user experience.
 
 The server-side backend resolves common CORS and browser compatibility issues by proxying or transcoding streams with FFMPEG, while the feature-rich frontend provides a user experience comparable to premium IPTV services.
@@ -48,14 +61,17 @@ The server-side backend resolves common CORS and browser compatibility issues by
  - 🛜 **Chromecast Support**: Cast your streams directly to any Google Cast-enabled device on your network. (This will only work if your source signal is strong and correctly passed without package missing, due to Cast framework)
  - 🔔 **Push Notifications**: Set reminders for upcoming programs and receive push notifications in your browser, even when the app is closed.
  - ⚙️ **Powerful Transcoding - even with GPUs**: The backend uses FFMPEG to process streams, ensuring compatibility across all modern browsers and devices. Create custom stream profiles to tailor transcoding settings. GPU transcoding supported. (Nvidia, InterlQSV and Vaapi)
- - 📂 **Flexible Source Management**: Add M3U and EPG sources from either local files, XC code and remote URLs. Set automatic refresh intervals for URL-based sources to keep your guide data fresh.
- - 🚀 **High Performance UI**: The frontend is built with performance in mind, using UI virtualization for the guide and efficient state management to ensure a fast and responsive experience.
+ - 📂 **Flexible Source Management**: Add M3U and EPG sources from local files, Xtream Codes, or remote URLs. Set automatic refresh intervals and optionally disable VOD processing per M3U/XC source for live-TV-only subscriptions.
+ - 🚀 **High Performance UI**: The frontend is built with performance in mind, using UI virtualization, lazy VOD loading, and efficient state management to ensure a fast and responsive experience.
  - 🐳 **Dockerized Deployment**: The entire application is packaged in a single Docker container for simple, one-command deployment using Docker or Docker Compose.
  - ▶️ **Picture-in-Picture**: Pop out the player to keep watching while you work on other things.
  - 🎥 **DVR**: Record programs using FFMPEG. Schedule recording via the TV Guide, or set specific channels and time with ease.
  - 📽️ **Single player**: Play .m3u8 and .ts links directly from the browser, with detailed console logs and recorded history
  - 👥 **Admin monitoring page**: Monitor users watch stream in real time, store historical plays, and broadcast messages to all users.
- - 📺 **VODs support**: Play your VODs from your provider, divided cleanly in the UI with a scalable grid, with filters and tabs for Movies and Series (IMPORTANT: this only workd with XC API log in)
+ - 📺 **VOD support**: Play provider VOD through a scalable Movies/Series interface. VOD catalogs load lazily and can be excluded per source when you only want live TV.
+ - ⏱️ **Timeshift**: Buffer selected live channels to local HLS segments for timeshift-style playback, with configurable storage and cleanup.
+ - 🧪 **Automated Test Harness**: Includes unit, frontend, integration, syntax, diff, and local startup smoke checks for safer updates.
+
 ---
 
 
@@ -78,13 +94,15 @@ ViniPlay is designed for easy deployment using Docker.
         version: "3.8"
         services:
           viniplay:
-            image: ardovini/viniplay:latest
+            build: .
+            image: viniplay:local
             container_name: viniplay
             ports:
               - "8998:8998"
             restart: unless-stopped
             volumes:
               - ./viniplay-data:/data
+              - ./viniplay-dvr:/dvr
             env_file:
               - ./.env
         
@@ -100,7 +118,7 @@ ViniPlay is designed for easy deployment using Docker.
         
         > **Security Note:** Your `SESSION_SECRET` should be a long, random string to properly secure user sessions.
     
-2.  **Build and Run the Container:**
+2.  **Build and Run the Container from this checkout:**
     
     ```
     docker-compose up --build -d
@@ -116,7 +134,7 @@ ViniPlay is designed for easy deployment using Docker.
     
     ```
     
-2.  **Run the Container:** Create a volume directory (`mkdir viniplay-data`) and a `.env` file first. Then run the container:
+2.  **Run the Container:** Create volume directories (`mkdir viniplay-data viniplay-dvr`) and a `.env` file first. Then run the container:
     
     ```
     docker run -d \
@@ -124,6 +142,7 @@ ViniPlay is designed for easy deployment using Docker.
       --name viniplay \
       --env-file ./.env \
       -v "$(pwd)/viniplay-data":/data \
+      -v "$(pwd)/viniplay-dvr":/dvr \
       viniplay
     
     ```
@@ -132,13 +151,25 @@ ViniPlay is designed for easy deployment using Docker.
 
 Once the container is running, open your browser and navigate to `http://localhost:8998`. You will be prompted to create your initial **admin account**. After creating the admin account, you can log in and start configuring your sources in the **Settings** tab.
 
+### Local Development
+
+For non-Docker development, run:
+
+```
+npm install
+npm start
+```
+
+Local `npm start` stores runtime files in project-local `./data` and `./dvr` directories. Docker keeps using `/data` and `/dvr` from the container environment.
+
 ---
 ## 🔧 Configuration
 
 All configuration is done via the web interface in the **Settings** tab.
 
--   **Data Sources:** Add your M3U and EPG sources from remote URLs, XC Codes, uploaded files.
--   **Processing:** After adding sources, click the **Process Sources & View Guide** button to download, parse, and merge all your data.
+-   **Data Sources:** Add your M3U and EPG sources from remote URLs, Xtream Codes, or uploaded files.
+-   **Include VOD content:** For M3U and Xtream Codes sources, leave this enabled when you want movie/series catalog processing. Disable it for live-TV-only subscriptions to reduce refresh time and storage usage.
+-   **Processing:** After adding sources, click the **Process Sources & View Guide** button to download, parse, and merge live/EPG data. Manual and scheduled processing can refresh VOD only for sources where **Include VOD content** is enabled; container startup skips VOD refresh so the app becomes responsive quickly.
 -   **Player Settings:** Manage User-Agent strings and define `ffmpeg` stream profiles.
 -   **User Management (Admin):** Admins can create, edit, and delete user accounts.
 
@@ -168,6 +199,8 @@ The project is organized into a Node.js backend and a modular vanilla JavaScript
 │   ├── sw.js                        # Service Worker for push notifications
 │   └── index.html                   # Main HTML file
 │
+├── lib/                             # Shared backend helpers
+├── tests/                           # Vitest unit, frontend, integration, and smoke tests
 ├── server.js                        # Node.js backend (Express.js)
 ├── Dockerfile                       # Docker build instructions
 ├── docker-compose.yml               # Docker Compose configuration
@@ -177,11 +210,23 @@ The project is organized into a Node.js backend and a modular vanilla JavaScript
 ```
 
 ---
+## 🧪 Verification
+
+Useful local checks:
+
+```
+npm test
+npm run check:syntax
+npm run check:diff
+node scripts/smoke-local-start.js
+```
+
+---
 ## 🏗️ Roadmap
 
 Upcoming features and fixes include:
 
--   Add VODs support for M3U links and File uploads  
+-   Improve VOD provider compatibility and metadata quality.
 -   Making DVR .ts files seekable during recording.
 -   Storing logos to improve load time.
 -   Implementing full horizontal scroll in the TV Guide.
