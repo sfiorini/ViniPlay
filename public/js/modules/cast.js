@@ -6,6 +6,7 @@
 import { showNotification } from './ui.js';
 import { UIElements, guideState, appState } from './state.js';
 import { stopStream } from './api.js';
+import { buildCastStreamUrl } from './castUrl.js';
 
 const APPLICATION_ID = 'CC1AD845'; // Default Media Receiver App ID
 
@@ -232,22 +233,16 @@ export async function loadMedia(url, name, logo) {
 
     console.log(`[CAST] Loading media: "${name}" from URL: ${url}`);
 
-    // ONLY modify URL to use cast profile if NOT already using it
-    // This ensures we switch to the active cast profile for Chromecast
     const activeCastProfileId = guideState.settings?.activeCastProfileId || 'cast-default';
-    let castUrl = url;
-    if (!url.includes(`profileId=${activeCastProfileId}`)) {
-        if (url.includes('profileId=')) {
-            // Replace existing profileId with active cast profile
-            castUrl = url.replace(/profileId=[^&]+/, `profileId=${activeCastProfileId}`);
-            console.log(`[CAST] Replaced profile with ${activeCastProfileId}`);
-        } else {
-            // Add cast profile
-            const separator = url.includes('?') ? '&' : '?';
-            castUrl = `${url}${separator}profileId=${activeCastProfileId}`;
-            console.log(`[CAST] Added ${activeCastProfileId} profile`);
-        }
-    }
+    const activeUserAgentId = guideState.settings?.activeUserAgentId || null;
+    const activeStreamProfile = guideState.settings?.streamProfiles?.find(profile => profile.id === guideState.settings?.activeStreamProfileId) || null;
+    let castUrl = buildCastStreamUrl({
+        url,
+        origin: window.location.origin,
+        activeCastProfileId,
+        activeUserAgentId,
+        activeStreamProfile
+    });
 
     // Generate and append cast authentication token
     try {
