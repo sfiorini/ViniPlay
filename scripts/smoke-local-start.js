@@ -27,11 +27,20 @@ function getFreePort() {
   });
 }
 
+function cleanupTempDirs() {
+  try {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  } catch (error) {
+    console.error(`Failed to remove smoke temp directory ${tmpRoot}: ${error.message}`);
+  }
+}
+
 function finish(code, message) {
   if (done) return;
   done = true;
   clearTimeout(timeout);
   if (child && !child.killed) child.kill('SIGTERM');
+  cleanupTempDirs();
   if (message) (code === 0 ? console.log : console.error)(message);
   setTimeout(() => process.exit(code), 100);
 }

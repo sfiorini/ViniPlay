@@ -33,7 +33,9 @@ for (let i = 0; i < prs.length; i++) {
     }
   }
 
-  if (!/(npm test|tests\/|commit [`0-9a-f]|[0-9a-f]{7})/.test(section)) {
+  const hasTestEvidence = /npm test\s+[^\n]+|tests\//.test(section);
+  const hasCommitEvidence = /commit\s+`[0-9a-f]{7,40}`|`[0-9a-f]{7,40}`/.test(section);
+  if (!hasTestEvidence && !hasCommitEvidence) {
     fail(`Missing test command or commit evidence in ${pr}`);
   }
 }
