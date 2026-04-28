@@ -16,6 +16,7 @@ import { finalizeGuideLoad, handleGuideLoad } from './guide.js';
 import { fetchConfig } from './api.js';
 import { initActivityPage } from './admin.js';
 import { initVodPage } from './vod.js';
+import { openMobileMenuElements, closeMobileMenuElements } from './mobileNav.js';
 
 
 let confirmCallback = null;
@@ -312,33 +313,22 @@ export const makeColumnResizable = (handleEl, targetEl, minWidth, settingKey, cs
  * Opens the mobile navigation menu.
  */
 export const openMobileMenu = () => {
-    if (UIElements.mobileNavMenu) {
-        UIElements.mobileNavMenu.classList.remove('hidden');
-        UIElements.mobileNavMenu.classList.remove('-translate-x-full');
-        UIElements.mobileNavMenu.classList.add('translate-x-0');
-    }
-    if (UIElements.mobileMenuOverlay) {
-        UIElements.mobileMenuOverlay.classList.remove('hidden');
-    }
-    document.body.classList.add('overflow-hidden');
+    openMobileMenuElements({
+        menu: UIElements.mobileNavMenu,
+        overlay: UIElements.mobileMenuOverlay,
+        body: document.body
+    });
 };
 
 /**
  * Closes the mobile navigation menu.
  */
 export const closeMobileMenu = () => {
-    if (UIElements.mobileNavMenu) {
-        UIElements.mobileNavMenu.classList.add('-translate-x-full');
-        UIElements.mobileNavMenu.classList.remove('translate-x-0');
-        UIElements.mobileNavMenu.addEventListener('transitionend', function handler() {
-            UIElements.mobileNavMenu.classList.add('hidden');
-            UIElements.mobileNavMenu.removeEventListener('transitionend', handler);
-        });
-    }
-    if (UIElements.mobileMenuOverlay) {
-        UIElements.mobileMenuOverlay.classList.add('hidden');
-    }
-    document.body.classList.remove('overflow-hidden');
+    closeMobileMenuElements({
+        menu: UIElements.mobileNavMenu,
+        overlay: UIElements.mobileMenuOverlay,
+        body: document.body
+    });
 };
 
 // FINAL FIX: This function will be called whenever a setting is saved.
