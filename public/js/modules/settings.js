@@ -1012,12 +1012,31 @@ const openSourceEditor = (sourceType, source = null) => {
             <input type="hidden" id="source-editor-selected-groups" value="[]">
         </div>
     `;
-    // Remove old button if it exists, then add the new one
+    const includeVodHTML = `
+        <div id="source-editor-include-vod-container" class="mt-4 ${sourceType !== 'm3u' ? 'hidden' : ''}">
+            <label class="flex items-center gap-3 text-sm font-medium text-gray-300">
+                <input type="checkbox" id="source-editor-include-vod" class="h-4 w-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500">
+                <span>Include VOD content</span>
+            </label>
+            <p class="text-xs text-gray-500 mt-1">Disable this for live-TV-only subscriptions to skip movie and series catalog refreshes.</p>
+        </div>
+    `;
+
+    // Remove old dynamic controls if they exist, then add the new ones
     const oldBtnContainer = document.getElementById('source-editor-filter-groups-container');
     if (oldBtnContainer) {
         oldBtnContainer.remove();
     }
-    UIElements.sourceEditorRefreshContainer.insertAdjacentHTML('beforebegin', filterGroupBtnHTML);
+    const oldIncludeVodContainer = document.getElementById('source-editor-include-vod-container');
+    if (oldIncludeVodContainer) {
+        oldIncludeVodContainer.remove();
+    }
+    UIElements.sourceEditorRefreshContainer.insertAdjacentHTML('beforebegin', filterGroupBtnHTML + includeVodHTML);
+
+    const includeVodCheckbox = document.getElementById('source-editor-include-vod');
+    if (includeVodCheckbox) {
+        includeVodCheckbox.checked = source ? source.includeVod !== false : true;
+    }
 
     // Populate hidden input with existing selected groups if editing
     if (source && source.selectedGroups) {
@@ -1333,6 +1352,10 @@ export function setupSettingsEventListeners() {
 
         // Refresh interval is shown for URL and XC, but not for File
         UIElements.sourceEditorRefreshContainer.classList.toggle('hidden', isFile);
+        const includeVodContainer = document.getElementById('source-editor-include-vod-container');
+        if (includeVodContainer) {
+            includeVodContainer.classList.toggle('hidden', UIElements.sourceEditorType.value !== 'm3u');
+        }
         // Also toggle visibility of the group filter button container based on file type
         const filterGroupsContainer = document.getElementById('source-editor-filter-groups-container');
         if (filterGroupsContainer) {
@@ -1381,6 +1404,11 @@ export function setupSettingsEventListeners() {
         const selectedGroupsInput = document.getElementById('source-editor-selected-groups');
         if (selectedGroupsInput) {
             formData.append('selectedGroups', selectedGroupsInput.value || '[]');
+        }
+
+        const includeVodCheckbox = document.getElementById('source-editor-include-vod');
+        if (includeVodCheckbox) {
+            formData.append('includeVod', includeVodCheckbox.checked);
         }
 
         if (id) formData.append('id', id);
