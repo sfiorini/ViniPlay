@@ -7,6 +7,7 @@ import { showNotification } from './ui.js';
 import { UIElements, guideState, appState } from './state.js';
 import { stopStream } from './api.js';
 import { buildCastStreamUrl } from './castUrl.js';
+import { handleCastSessionEnded } from './castSession.js';
 
 const APPLICATION_ID = 'CC1AD845'; // Default Media Receiver App ID
 
@@ -162,16 +163,16 @@ function handleSessionStateChange(event) {
             break;
         case cast.framework.SessionState.SESSION_ENDED:
             console.log('[CAST] Session ended, stopping Cast stream on server.');
-            // Stop the Cast stream on the server
-            if (castState.currentCastStreamUrl) {
-                stopCastStream(castState.currentCastStreamUrl);
-                castState.currentCastStreamUrl = null;
-            }
-            castState.session = null;
-            castState.isCasting = false;
-            castState.currentMedia = null;
-            showNotification('Casting session ended.', false, 4000);
-            updatePlayerUI();
+            handleCastSessionEnded({
+                castState,
+                stopCastStream,
+                updatePlayerUI,
+                forceRefreshStream: async () => {
+                    const { forceRefreshStream } = await import('./player.js');
+                    return forceRefreshStream();
+                },
+                showNotification
+            });
             break;
         case cast.framework.SessionState.NO_SESSION:
             castState.session = null;
