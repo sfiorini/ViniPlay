@@ -30,6 +30,9 @@ const { resolveServerConfig } = require('./lib/serverConfig');
 const { createImageProxyHandler } = require('./lib/imageProxy');
 const { DEFAULT_SETTINGS, mergeSettingsWithDefaults } = require('./lib/settingsDefaults');
 const { initializeSchema } = require('./lib/schema');
+const { parseM3U: parseM3UFile } = require('./lib/m3uParser');
+const { createTimeshiftEngine } = require('./lib/timeshiftEngine');
+const { registerTimeshiftRoutes } = require('./lib/timeshiftRoutes');
 
 
 // --- NEW: Live Activity Tracking for Redirects ---
@@ -80,6 +83,7 @@ const {
     VOD_SERIES_JSON_PATH,
     SETTINGS_PATH
 } = runtimePaths;
+const TIMESHIFT_DIR = path.join(DATA_DIR, 'timeshift');
 
 console.log(`[INIT] Application starting. Data directory: ${DATA_DIR}, Public directory: ${PUBLIC_DIR}`);
 
@@ -111,6 +115,7 @@ try {
     if (!fs.existsSync(RAW_CACHE_DIR)) fs.mkdirSync(RAW_CACHE_DIR, { recursive: true });
     if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true });
     if (!fs.existsSync(IMAGE_CACHE_DIR)) fs.mkdirSync(IMAGE_CACHE_DIR, { recursive: true });
+    if (!fs.existsSync(TIMESHIFT_DIR)) fs.mkdirSync(TIMESHIFT_DIR, { recursive: true });
     console.log(`[INIT] All required directories checked/created.`);
 } catch (mkdirError) {
     console.error(`[INIT] FATAL: Failed to create necessary directories: ${mkdirError.message}`);
@@ -439,6 +444,18 @@ const requireDvrAccess = (req, res, next) => {
 // the /dvr directory to play back recorded files. The API endpoints for creating
 // and managing recordings remain protected by `requireDvrAccess`.
 app.use('/dvr', requireAuth, express.static(DVR_DIR));
+
+const timeshiftEngine = createTimeshiftEngine({
+    db,
+    fs,
+    path,
+    spawn,
+    parseM3U: parseM3UFile,
+    getSettings,
+    liveChannelsPath: LIVE_CHANNELS_M3U_PATH,
+    timeshiftDir: TIMESHIFT_DIR
+});
+registerTimeshiftRoutes(app, { db, engine: timeshiftEngine, fs, path, timeshiftDir: TIMESHIFT_DIR });
 
 // --- Helper Functions ---
 /**
