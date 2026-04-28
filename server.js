@@ -33,6 +33,7 @@ const { initializeSchema } = require('./lib/schema');
 const { parseM3U: parseM3UFile } = require('./lib/m3uParser');
 const { createTimeshiftEngine } = require('./lib/timeshiftEngine');
 const { registerTimeshiftRoutes } = require('./lib/timeshiftRoutes');
+const { startTimeshiftServices } = require('./lib/timeshiftStartup');
 
 
 // --- NEW: Live Activity Tracking for Redirects ---
@@ -5024,6 +5025,13 @@ detectHardwareAcceleration().then(() => {
         schedule.scheduleJob('0 2 * * *', autoDeleteOldRecordings);
         console.log('[DVR_STORAGE] Scheduled daily cleanup of old recordings.');
 
+        startTimeshiftServices({
+            engine: timeshiftEngine,
+            schedule,
+            cleanupIntervalMinutes: getSettings().timeshift?.cleanupIntervalMinutes || 5,
+            processLike: process
+        });
+        console.log('[TIMESHIFT] Timeshift engine initialized.');
 
     });
 });
