@@ -22,6 +22,27 @@ let currentChannelInfo = null; // Stores { url, name, channelId } for retries
 let retryCount = 0;
 const MAX_RETRIES = 3;
 let retryTimeout = null;
+let isTimeshiftPlayback = false;
+
+async function getTimeshiftInfo(channelId) {
+    if (!channelId) return { enabled: false };
+    try {
+        const response = await fetch(`/api/timeshift/info/${encodeURIComponent(channelId)}`);
+        if (!response.ok) return { enabled: false };
+        return await response.json();
+    } catch (error) {
+        console.warn('[TIMESHIFT] Could not load timeshift info, using normal playback:', error);
+        return { enabled: false };
+    }
+}
+
+function canUseHls() {
+    return typeof Hls !== 'undefined' && Hls.isSupported?.();
+}
+
+function buildTimeshiftPlaylistUrl(channelId) {
+    return `/api/timeshift/stream/${encodeURIComponent(channelId)}/playlist.m3u8`;
+}
 
 /**
  * Handles a catastrophic stream error by attempting to restart the stream.
@@ -186,7 +207,7 @@ function updateStreamInfo() {
  * @param {string} name - The name of the channel to display.
  * @param {string} channelId - The unique ID of the channel.
  */
-export const playChannel = (url, name, channelId) => {
+export const playChannel = async (url, name, channelId) => {
     // On a fresh play request (not a retry), reset the retry counter
     if (!retryTimeout) {
         retryCount = 0;
@@ -263,6 +284,21 @@ export const playChannel = (url, name, channelId) => {
         streamInfoInterval = null;
     }
 
+    const timeshiftInfo = await getTimeshiftInfo(channelId);
+    if (timeshiftInfo.enabled && timeshiftInfo.recording && canUseHls()) {
+        const hls = new Hls();
+        appState.player = hls;
+        isTimeshiftPlayback = true;
+        openModal(UIElements.videoModal);
+        UIElements.videoTitle.textContent = name;
+        hls.loadSource(buildTimeshiftPlaylistUrl(channelId));
+        hls.attachMedia(UIElements.videoElement);
+        UIElements.videoElement.volume = parseFloat(localStorage.getItem('iptvPlayerVolume') || 0.5);
+        streamInfoInterval = setInterval(updateStreamInfo, 2000);
+        return;
+    }
+
+    isTimeshiftPlayback = false;
     if (mpegts.isSupported()) {
         const mpegtsConfig = {
             enableStashBuffer: true,
