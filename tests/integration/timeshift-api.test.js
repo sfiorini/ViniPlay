@@ -18,6 +18,7 @@ describe('timeshift routes', () => {
     const { registerTimeshiftRoutes } = require('../../lib/timeshiftRoutes');
     const { app } = makeTimeshiftTestApp({ session: { userId: 1, isAdmin: true }, registerTimeshiftRoutes });
     await request(app).post('/api/timeshift/channels').send({ channelId: '../bad', channelName: 'One' }).expect(400);
+    await request(app).post('/api/timeshift/channels').send({ channelId: '..', channelName: 'One' }).expect(400);
     await request(app).post('/api/timeshift/channels').send({ channelId: 'c1', channelName: '' }).expect(400);
   });
 

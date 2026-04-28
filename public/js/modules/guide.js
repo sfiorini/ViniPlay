@@ -79,7 +79,10 @@ export function openProgramDetails(progItem) {
 
     if (detailsPlayBtn) {
         detailsPlayBtn.onclick = () => {
-            playChannel(channelUrl, channelName, channelId);
+            playChannel(channelUrl, channelName, channelId).catch(error => {
+                console.error('[GUIDE] Failed to play channel:', error);
+                showNotification('Failed to play channel.', true);
+            });
             closeModal(programDetailsModal);
         };
     }
@@ -1016,7 +1019,10 @@ export function setupGuideEventListeners() {
         }
 
         if (channelInfo) {
-            playChannel(channelInfo.dataset.url, channelInfo.dataset.name, channelInfo.dataset.id);
+            playChannel(channelInfo.dataset.url, channelInfo.dataset.name, channelInfo.dataset.id).catch(error => {
+                console.error('[GUIDE] Failed to play channel:', error);
+                showNotification('Failed to play channel.', true);
+            });
         }
 
         if (progItem) {

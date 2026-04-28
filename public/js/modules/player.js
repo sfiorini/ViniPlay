@@ -67,7 +67,9 @@ function handleStreamError() {
         console.log(`[PLAYER_RETRY] Attempting to restart stream. Attempt ${retryCount}/${MAX_RETRIES}.`);
         if (currentChannelInfo) {
             // Re-call playChannel which handles the full setup
-            playChannel(currentChannelInfo.url, currentChannelInfo.name, currentChannelInfo.channelId);
+            playChannel(currentChannelInfo.url, currentChannelInfo.name, currentChannelInfo.channelId).catch(error => {
+                console.error('[PLAYER_RETRY] Failed to restart stream:', error);
+            });
         } else {
             console.error("[PLAYER_RETRY] Cannot retry: current channel info is missing.");
             stopAndCleanupPlayer();
@@ -104,7 +106,7 @@ export async function forceRefreshStream() {
     }
 
     // Immediately try to play the channel again
-    playChannel(currentChannelInfo.url, currentChannelInfo.name, currentChannelInfo.channelId);
+    await playChannel(currentChannelInfo.url, currentChannelInfo.name, currentChannelInfo.channelId);
 }
 
 
@@ -149,8 +151,8 @@ export const stopAndCleanupPlayer = async () => { // MODIFIED: Made function asy
     // CRITICAL FIX: Always destroy the local player first, regardless of cast state
     // This ensures local playback stops when switching to cast or closing the modal
     if (appState.player) {
-        console.log('[PLAYER] Destroying local mpegts player.');
-        appState.player.destroy();
+        console.log('[PLAYER] Destroying local player.');
+        appState.player.destroy?.();
         appState.player = null;
     }
     UIElements.videoElement.src = "";

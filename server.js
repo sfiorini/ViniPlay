@@ -131,8 +131,8 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
         process.exit(1);
     } else {
         console.log("[DB] Connected to the SQLite database.");
+        initializeSchema(db).catch(err => console.error('[DB] Error initializing extracted schema:', err.message));
         db.serialize(() => {
-            initializeSchema(db).catch(err => console.error('[DB] Error initializing extracted schema:', err.message));
             db.run(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password TEXT, isAdmin INTEGER DEFAULT 0, canUseDvr INTEGER DEFAULT 0, allowed_sources TEXT)`, (err) => {
                 if (err) {
                     console.error("[DB] Error creating 'users' table:", err.message);

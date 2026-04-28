@@ -35,6 +35,15 @@ describe('timeshift engine', () => {
     expect(deps.spawn).toHaveBeenCalledTimes(1);
   });
 
+  it('rejects unsafe channel ids before creating HLS paths', async () => {
+    const { createTimeshiftEngine } = require('../../lib/timeshiftEngine');
+    const deps = fakeEngineDeps({ parseM3U: () => [{ id: '..', url: 'http://provider/live.ts' }] });
+    const engine = createTimeshiftEngine(deps);
+    await expect(engine.start('..', 'Unsafe')).rejects.toThrow('Invalid channel id');
+    expect(deps.spawn).not.toHaveBeenCalled();
+    expect(deps.fs.mkdirSync).not.toHaveBeenCalled();
+  });
+
   it('does not spawn when the channel is missing from parsed M3U', async () => {
     const { createTimeshiftEngine } = require('../../lib/timeshiftEngine');
     const deps = fakeEngineDeps({ parseM3U: () => [] });
