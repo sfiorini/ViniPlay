@@ -28,6 +28,7 @@ const { refreshVodContent, processM3uVod } = require('./vodProcessor');
 const XtreamClient = require('./xtreamClient');
 const { resolveServerConfig } = require('./lib/serverConfig');
 const { createImageProxyHandler } = require('./lib/imageProxy');
+const { DEFAULT_SETTINGS, mergeSettingsWithDefaults } = require('./lib/settingsDefaults');
 
 
 // --- NEW: Live Activity Tracking for Redirects ---
@@ -735,7 +736,8 @@ function getSettings() {
             maxFiles: 5,
             maxFileSizeBytes: 5 * 1024 * 1024, // 5MB
             autoDeleteDays: 7
-        }
+        },
+        timeshift: DEFAULT_SETTINGS.timeshift
     };
 
     if (!fs.existsSync(SETTINGS_PATH)) {
@@ -865,6 +867,13 @@ function getSettings() {
                 settings.logs.autoDeleteDays = defaultSettings.logs.autoDeleteDays;
                 needsSave = true;
             }
+        }
+
+        const mergedSettings = mergeSettingsWithDefaults(settings);
+        if (JSON.stringify(mergedSettings.timeshift) !== JSON.stringify(settings.timeshift)) {
+            console.log('[SETTINGS_MIGRATE] Adding missing timeshift settings defaults.');
+            settings = mergedSettings;
+            needsSave = true;
         }
 
         // Check that all expected settings are present and set and if not,
