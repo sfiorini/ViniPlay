@@ -27,6 +27,7 @@ const si = require('systeminformation'); // NEW: For system health monitoring
 const { refreshVodContent, processM3uVod } = require('./vodProcessor');
 const XtreamClient = require('./xtreamClient');
 const { resolveServerConfig } = require('./lib/serverConfig');
+const { createImageProxyHandler } = require('./lib/imageProxy');
 
 
 // --- NEW: Live Activity Tracking for Redirects ---
@@ -4791,109 +4792,8 @@ app.get('/api/public-ip', requireAuth, (req, res) => {
 });
 
 // --- Image Proxy Endpoint (for VOD posters) ---
-// Proxies HTTP/HTTPS images to avoid mixed content warnings
-// Now with server-side disk caching for performance
-app.get('/api/image-proxy', allowLocalOrAuth, (req, res) => {
-    const imageUrl = req.query.url;
-
-    if (!imageUrl) {
-        return res.status(400).send('Missing url parameter');
-    }
-
-    // Validate URL
-    try {
-        new URL(imageUrl);
-    } catch (err) {
-        return res.status(400).send('Invalid URL');
-    }
-
-    // Generate a cache filename based on the URL hash
-    const urlHash = crypto.createHash('sha256').update(imageUrl).digest('hex');
-    const cacheFilePath = path.join(IMAGE_CACHE_DIR, urlHash);
-    const cacheMetaPath = path.join(IMAGE_CACHE_DIR, `${urlHash}.meta`);
-
-    // Check if image exists in cache
-    if (fs.existsSync(cacheFilePath) && fs.existsSync(cacheMetaPath)) {
-        try {
-            const meta = JSON.parse(fs.readFileSync(cacheMetaPath, 'utf-8'));
-            console.log(`[IMAGE_PROXY] Serving from cache: ${imageUrl}`);
-
-            // Set headers from cached metadata
-            res.setHeader('Content-Type', meta.contentType);
-            res.setHeader('Cache-Control', 'public, max-age=2592000'); // 30 days for cached images
-            res.setHeader('X-Cache', 'HIT');
-
-            // Stream cached file
-            const fileStream = fs.createReadStream(cacheFilePath);
-            fileStream.pipe(res);
-
-            fileStream.on('error', (err) => {
-                console.error(`[IMAGE_PROXY] Error reading cached file:`, err.message);
-                // If cache is corrupted, delete and fall through to fetch
-                try {
-                    fs.unlinkSync(cacheFilePath);
-                    fs.unlinkSync(cacheMetaPath);
-                } catch (e) { }
-                res.status(500).send('Cache read error');
-            });
-
-            return;
-        } catch (err) {
-            console.error(`[IMAGE_PROXY] Error reading cache metadata:`, err.message);
-            // Fall through to fetch fresh
-        }
-    }
-
-    console.log(`[IMAGE_PROXY] Fetching and caching image: ${imageUrl}`);
-
-    // Determine protocol (http or https)
-    const protocol = imageUrl.startsWith('https') ? https : http;
-
-    protocol.get(imageUrl, (imageRes) => {
-        // Check if response is an image
-        const contentType = imageRes.headers['content-type'];
-        if (!contentType || !contentType.startsWith('image/')) {
-            console.error(`[IMAGE_PROXY] Invalid content type: ${contentType}`);
-            return res.status(400).send('URL does not point to an image');
-        }
-
-        // Set response headers
-        res.setHeader('Content-Type', contentType);
-        res.setHeader('Cache-Control', 'public, max-age=2592000'); // 30 days
-        res.setHeader('X-Cache', 'MISS');
-
-        // Create write stream to save to cache
-        const fileStream = fs.createWriteStream(cacheFilePath);
-
-        // Pipe to both cache and response
-        imageRes.pipe(fileStream);
-        imageRes.pipe(res);
-
-        // Save metadata when done
-        fileStream.on('finish', () => {
-            const meta = {
-                url: imageUrl,
-                contentType: contentType,
-                cachedAt: new Date().toISOString()
-            };
-            try {
-                fs.writeFileSync(cacheMetaPath, JSON.stringify(meta, null, 2));
-                console.log(`[IMAGE_PROXY] Cached image: ${urlHash}`);
-            } catch (err) {
-                console.error(`[IMAGE_PROXY] Failed to write cache metadata:`, err.message);
-            }
-        });
-
-        fileStream.on('error', (err) => {
-            console.error(`[IMAGE_PROXY] Error writing to cache:`, err.message);
-            // Continue serving even if cache write fails
-        });
-
-    }).on('error', (err) => {
-        console.error(`[IMAGE_PROXY] Error fetching image from ${imageUrl}:`, err.message);
-        res.status(500).send('Failed to fetch image');
-    });
-});
+// Proxies HTTP/HTTPS images to avoid mixed content warnings.
+app.get('/api/image-proxy', allowLocalOrAuth, createImageProxyHandler({ imageCacheDir: IMAGE_CACHE_DIR }));
 
 
 // --- Backup & Restore Endpoints ---
